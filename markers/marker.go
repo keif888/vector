@@ -49,37 +49,39 @@ const (
 	CSVTimestampFormat = "2006-01-02T15:04:05.000000000Z"
 )
 
-// VectorMarkerItems represents an sqlite vector table
-type VectorMarkerItems struct {
-	Rowid     int
-	Embedding DBEmbed
+// VectorMarkerFace represents the storage of face vectors
+type VectorMarkerFace struct {
+	MarkerUID   string  `gorm:"type:bytes;size:42;primaryKey;autoIncrement:false;"`
+	EmbeddingID int     `gorm:"primaryKey"`
+	Embedding   DBEmbed `gorm:"size:512;"`
 }
 
 // VectorMarker represents an image marker point.
 type VectorMarker struct {
-	MarkerUID     string     `gorm:"type:bytes;size:42;primaryKey;autoIncrement:false;" json:"UID" yaml:"UID"`
-	FileUID       string     `gorm:"type:bytes;size:42;index;default:'';" json:"FileUID" yaml:"FileUID"`
-	MarkerType    string     `gorm:"type:bytes;size:8;default:'';" json:"Type" yaml:"Type"`
-	MarkerSrc     string     `gorm:"type:bytes;size:8;default:'';" json:"Src" yaml:"Src,omitempty"`
-	MarkerName    string     `gorm:"size:160;" json:"Name" yaml:"Name,omitempty"`
-	MarkerReview  bool       `json:"Review" yaml:"Review,omitempty"`
-	MarkerInvalid bool       `json:"Invalid" yaml:"Invalid,omitempty"`
-	SubjUID       string     `gorm:"type:bytes;size:42;index:idx_markers_subj_uid_src;" json:"SubjUID" yaml:"SubjUID,omitempty"`
-	SubjSrc       string     `gorm:"type:bytes;size:8;index:idx_markers_subj_uid_src;default:'';" json:"SubjSrc" yaml:"SubjSrc,omitempty"`
-	FaceID        string     `gorm:"type:bytes;size:64;index;" json:"FaceID" yaml:"FaceID,omitempty"`
-	FaceDist      float64    `gorm:"default:-1;" json:"FaceDist" yaml:"FaceDist,omitempty"`
-	Embedding     DBEmbed    `gorm:"size:512;" json:"-" yaml:"EmbeddingsJSON,omitempty"`
-	X             float32    `json:"X" yaml:"X,omitempty"`
-	Y             float32    `json:"Y" yaml:"Y,omitempty"`
-	W             float32    `json:"W" yaml:"W,omitempty"`
-	H             float32    `json:"H" yaml:"H,omitempty"`
-	Q             int        `json:"Q" yaml:"Q,omitempty"`
-	Size          int        `gorm:"default:-1;" json:"Size" yaml:"Size,omitempty"`
-	Score         int        `gorm:"type:int;size:16;" json:"Score" yaml:"Score,omitempty"`
-	Thumb         string     `gorm:"type:bytes;size:128;index;default:'';" json:"Thumb" yaml:"Thumb,omitempty"`
-	MatchedAt     *time.Time `sql:"index" json:"MatchedAt" yaml:"MatchedAt,omitempty"`
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	MarkerUID      string          `gorm:"type:bytes;size:42;primaryKey;autoIncrement:false;" json:"UID" yaml:"UID"`
+	FileUID        string          `gorm:"type:bytes;size:42;index;default:'';" json:"FileUID" yaml:"FileUID"`
+	MarkerType     string          `gorm:"type:bytes;size:8;default:'';" json:"Type" yaml:"Type"`
+	MarkerSrc      string          `gorm:"type:bytes;size:8;default:'';" json:"Src" yaml:"Src,omitempty"`
+	MarkerName     string          `gorm:"size:160;" json:"Name" yaml:"Name,omitempty"`
+	MarkerReview   bool            `json:"Review" yaml:"Review,omitempty"`
+	MarkerInvalid  bool            `json:"Invalid" yaml:"Invalid,omitempty"`
+	SubjUID        string          `gorm:"type:bytes;size:42;index:idx_markers_subj_uid_src;" json:"SubjUID" yaml:"SubjUID,omitempty"`
+	SubjSrc        string          `gorm:"type:bytes;size:8;index:idx_markers_subj_uid_src;default:'';" json:"SubjSrc" yaml:"SubjSrc,omitempty"`
+	FaceID         string          `gorm:"type:bytes;size:64;index;" json:"FaceID" yaml:"FaceID,omitempty"`
+	FaceDist       float64         `gorm:"default:-1;" json:"FaceDist" yaml:"FaceDist,omitempty"`
+	EmbeddingsJSON json.RawMessage `gorm:"type:bytes;size:66666;" json:"-" yaml:"EmbeddingsJSON,omitempty"`
+	LandmarksJSON  json.RawMessage `gorm:"type:bytes;size:66666;" json:"-" yaml:"LandmarksJSON,omitempty"`
+	X              float32         `json:"X" yaml:"X,omitempty"`
+	Y              float32         `json:"Y" yaml:"Y,omitempty"`
+	W              float32         `json:"W" yaml:"W,omitempty"`
+	H              float32         `json:"H" yaml:"H,omitempty"`
+	Q              int             `json:"Q" yaml:"Q,omitempty"`
+	Size           int             `gorm:"default:-1;" json:"Size" yaml:"Size,omitempty"`
+	Score          int             `gorm:"type:int;size:16;" json:"Score" yaml:"Score,omitempty"`
+	Thumb          string          `gorm:"type:bytes;size:128;index;default:'';" json:"Thumb" yaml:"Thumb,omitempty"`
+	MatchedAt      *time.Time      `sql:"index" json:"MatchedAt" yaml:"MatchedAt,omitempty"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 // Embedding represents a face embedding.
@@ -132,7 +134,7 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 	}
 
 	for i := range numberOfMarkers {
-		if i%1000 == 0 {
+		if i%1000 == 0 && i > 0 {
 			log.Infof("generateMarkers: writing %d of %d to %s", i, numberOfMarkers, fileName)
 		}
 		faceNumber := rand.IntN(numberOfFaces)
@@ -146,16 +148,16 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 			MarkerInvalid: false,
 			SubjSrc:       SrcAuto,
 			FaceDist:      rand.Float64(), //nolint:gosec // test data generation crypto rand not required
-			Embedding:     DBEmbed{Embed: embedding.JSON()},
-			X:             rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			Y:             rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			W:             rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			H:             rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			Q:             rand.IntN(600), //nolint:gosec // test data generation crypto rand not required
-			Size:          rand.IntN(600), //nolint:gosec // test data generation crypto rand not required
-			Score:         rand.IntN(150), //nolint:gosec // test data generation crypto rand not required
-			CreatedAt:     time.Now().UTC(),
-			UpdatedAt:     time.Now().UTC(),
+			// EmbeddingsJSON: []byte(embedding.JSON()),
+			X:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
+			Y:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
+			W:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
+			H:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
+			Q:         rand.IntN(600), //nolint:gosec // test data generation crypto rand not required
+			Size:      rand.IntN(600), //nolint:gosec // test data generation crypto rand not required
+			Score:     rand.IntN(150), //nolint:gosec // test data generation crypto rand not required
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
 		}
 
 		csvRecord := []string{
@@ -190,7 +192,7 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 		}
 
 	}
-
+	log.Infof("generateMarkers: wrote %d markers to %s", numberOfMarkers, fileName)
 	return nil
 }
 
@@ -209,14 +211,27 @@ func setupGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
 	db, _ = connectGormDB(driver, dsn)
 
 	if dbms.Db().Migrator().HasTable(&VectorMarker{}) {
-		return db, dbms.Db().Migrator().DropTable(&VectorMarker{})
+		if err = dbms.Db().Migrator().DropTable(&VectorMarker{}); err != nil {
+			return
+		}
+	}
+	if dbms.Db().Migrator().HasTable(&VectorMarkerFace{}) {
+		return db, dbms.Db().Migrator().DropTable(&VectorMarkerFace{})
 	}
 	return db, nil
 }
 
 // migrateVectorMarkers uses Gorm to create/alter the vector_marker table
 func migrateVectorMarkers() (err error) {
-	return dbms.Db().AutoMigrate(&VectorMarker{})
+	if err = dbms.Db().AutoMigrate(&VectorMarker{}); err != nil {
+		return
+	}
+
+	// SQLite3 bombs out when attempting to migrate the table as it can't understand the virtual table.
+	if dbms.DbDialect() != dbms.SQLite3 {
+		return dbms.Db().AutoMigrate(&VectorMarkerFace{})
+	}
+	return
 }
 
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
@@ -234,8 +249,13 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
 			return err
 		}
-		if err = dbms.Db().Exec("ALTER TABLE `vector_markers` ADD VECTOR INDEX (embedding) M=8 DISTANCE=cosine").Error; err != nil {
-			log.Errorf("LoadMarkers: vector_markers index setup failed with %s", err)
+		if err = dbms.Db().Exec("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=8 DISTANCE=cosine").Error; err != nil {
+			log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
+			return err
+		}
+		// What does this do to the tables?
+		if err = migrateVectorMarkers(); err != nil {
+			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
 			return err
 		}
 
@@ -284,6 +304,16 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
 			return err
 		}
+		if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_cosine_ops) WITH (m=8)").Error; err != nil {
+			log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
+			return err
+		}
+		// Does this drop the index?
+		if err = migrateVectorMarkers(); err != nil {
+			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
+			return err
+		}
+
 	case dbms.SQLite3:
 		if db, err = setupGormDB(driver, dsn); err != nil {
 			db.Close()
@@ -293,24 +323,20 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 		defer db.Close()
 		// Disable journal to speed up.
 		dbms.Db().Exec("PRAGMA journal_mode=OFF")
-		/*
-			if err = dbms.Db().Exec("CREATE TABLE `vector_markers` ( `marker_uid` blob NOT NULL, `embedding` text NOT NULL, PRIMARY KEY (`marker_uid`))").Error; err != nil {
-				log.Errorf("LoadMarkers: vector_markers setup failed with %s", err)
+		// AutoMigrate can not handle an existing virtual table.
+		if dbms.Db().Migrator().HasTable("vector_marker_faces") {
+			if err = dbms.Db().Migrator().DropTable("vector_marker_faces"); err != nil {
+				log.Errorf("LoadMarkers: vector_marker_faces drop failed with %s", err)
 				return err
 			}
-		*/
-		if err = migrateVectorMarkers(); err != nil {
-			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
+		}
+		// No support for blob or primary key!
+		if err = dbms.Db().Exec("CREATE VIRTUAL TABLE `vector_marker_faces` USING vec0 (embedding float[512], marker_uid text, embedding_id int)").Error; err != nil {
+			log.Errorf("LoadMarkers: vector_marker_faces setup failed with %s", err)
 			return err
 		}
-		if dbms.Db().Migrator().HasTable("vector_marker_items") {
-			if err = dbms.Db().Migrator().DropTable("vector_marker_items"); err != nil {
-				log.Errorf("LoadMarkers: vector_marker_items drop failed with %s", err)
-				return err
-			}
-		}
-		if err = dbms.Db().Exec("CREATE VIRTUAL TABLE `vector_marker_items` USING vec0 (embedding float[512])").Error; err != nil {
-			log.Errorf("LoadMarkers: vector_marker_items setup failed with %s", err)
+		if err = migrateVectorMarkers(); err != nil {
+			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
 			return err
 		}
 	case dbms.Qdrant:
@@ -330,7 +356,7 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 
 	csvReader := csv.NewReader(csvFile)
 	markers := make([]VectorMarker, 100)
-	sqliteEmbeddings := make([]VectorMarkerItems, 100)
+	faceEmbeddings := make([]VectorMarkerFace, 100)
 	counter := 0
 	record := 1
 	headerRead := false
@@ -340,7 +366,6 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 	var x, y, w, h float32
 	var q, size, score int
 	var createdAt, updatedAt time.Time
-	var embedding string
 ProcessFileLoop:
 	for {
 		csvRecord, err = csvReader.Read()
@@ -405,35 +430,6 @@ ProcessFileLoop:
 		} else {
 			updatedAt = uAt
 		}
-		switch driver {
-		case dbms.SQLite3:
-			sqliteEmbeddings[counter] = VectorMarkerItems{
-				Rowid:     record,
-				Embedding: DBEmbed{Embed: csvRecord[11]},
-			}
-			embedding = strconv.Itoa(record)
-		case dbms.MySQL:
-			/*
-				jsonembed := make(Embedding, 512)
-				for i, s := range strings.Split(csvRecord[11][1:len(csvRecord[11])-1], ",") {
-					f, err := strconv.ParseFloat(s, 64)
-					if err != nil {
-						f = 0
-						log.Errorf("LoadMarkers: unable to parse float %s", s)
-					}
-					jsonembed[i] = f
-				}
-				embedding = hex.EncodeToString(MariaDBEmbedding(jsonembed))
-				log.Infof("LoadMarkers: embed hex - %s", embedding)
-				embedding = string(MariaDBEmbedding(jsonembed))
-				log.Infof("LoadMarkers: embed = %s", hex.EncodeToString([]byte(embedding)))
-			*/
-			embedding = csvRecord[11]
-		case dbms.Postgres:
-			embedding = csvRecord[11]
-		case dbms.Qdrant:
-			embedding = csvRecord[11]
-		}
 		markers[counter] = VectorMarker{
 			MarkerUID:     csvRecord[0],
 			FileUID:       csvRecord[1],
@@ -443,22 +439,28 @@ ProcessFileLoop:
 			MarkerInvalid: markerInvalid,
 			SubjSrc:       csvRecord[8],
 			FaceDist:      faceDist,
-			Embedding:     DBEmbed{Embed: embedding},
-			X:             x,
-			Y:             y,
-			W:             w,
-			H:             h,
-			Q:             q,
-			Size:          size,
-			Score:         score,
-			CreatedAt:     createdAt,
-			UpdatedAt:     updatedAt,
+			// Embedding:     DBEmbed{Embed: embedding},
+			X:         x,
+			Y:         y,
+			W:         w,
+			H:         h,
+			Q:         q,
+			Size:      size,
+			Score:     score,
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		}
+
+		faceEmbeddings[counter] = VectorMarkerFace{
+			MarkerUID:   markers[counter].MarkerUID,
+			EmbeddingID: 0, // This is needed to support cases where there is more than 1 Embedding returned by the AI routines, but is out of scope for this
+			Embedding:   DBEmbed{Embed: csvRecord[11]},
 		}
 		counter++
 		record++
 		if counter == 100 {
 			log.Infof("processing %d with counter %d", record, counter)
-			if err = createDBMSMarkers(driver, record, &markers, &sqliteEmbeddings, log); err != nil {
+			if err = createDBMSMarkers(driver, record, &markers, &faceEmbeddings, log); err != nil {
 				return err
 			}
 			counter = 0
@@ -467,7 +469,7 @@ ProcessFileLoop:
 
 	if counter > 0 {
 		markers = markers[:counter]
-		return createDBMSMarkers(driver, record, &markers, &sqliteEmbeddings, log)
+		return createDBMSMarkers(driver, record, &markers, &faceEmbeddings, log)
 	}
 
 	return nil
@@ -483,95 +485,112 @@ func QueryMarkers(driver, dsn string, log *logrus.Logger) (err error) {
 	}
 	defer db.Close()
 
-	var e string
+	var mID string
 	if m, err := gorm.G[VectorMarker](dbms.Db()).First(context.Background()); err != nil {
-		log.Errorf("LoadMarkers: first failed with %s", err)
+		log.Errorf("LoadMarkers: VectorMarker first failed with %s", err)
 		return err
 	} else {
-		log.Infof("marker 1st = %+v", m)
+		mID = m.MarkerUID
+	}
+
+	var e string
+	if m, err := gorm.G[VectorMarkerFace](dbms.Db()).Where("marker_uid = ?", mID).First(context.Background()); err != nil {
+		log.Errorf("LoadMarkers: VectorMarkerFace first failed with %s", err)
+		return err
+	} else {
 		e = m.Embedding.Embed
 	}
 
-	if driver == dbms.SQLite3 {
-		log.Infof("LoadMarkers: e = %s", e)
-		idf, _ := strconv.ParseFloat(e, 64)
-		id := int64(idf)
-		if v, err := gorm.G[VectorMarkerItems](dbms.Db()).Where("rowid = ?", id).First(context.Background()); err != nil {
-			log.Errorf("LoadMarkers: sqlite get id failed with %s", err)
-			return err
-		} else {
-			e = v.Embedding.Embed
-		}
+	var c int64
 
-		type Result struct {
-			Rowid    int
-			Distance float64
-		}
-
-		var r []Result
-
-		if err = gorm.G[Result](dbms.Db()).
-			Table("vector_marker_items").
-			Select("rowid, distance").
-			Where("embedding match ? and k = ? and distance = ?", e, 5, 0).
-			Scan(context.Background(), &r); err != nil {
-			log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
-			return err
-		}
-		log.Infof("LoadMarkers: result1 = %+v", r)
-
-		if err = gorm.G[VectorMarkerItems](dbms.Db()).
-			Select("rowid, distance").
-			Where(DBEmbedQuery("embedding").Equals(0.0, e)).
-			Scan(context.Background(), &r); err != nil {
-			log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
-			return err
-		}
-		log.Infof("LoadMarkers: result2 = %+v", r)
-
-		result := gorm.WithResult()
-		if err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), "select count(*) FROM `vector_marker_items` WHERE `embedding` match ? AND k = 5 AND distance = 0", e); err != nil {
-			log.Errorf("LoadMarkers: any exec failed with %s", err)
-			return err
-		}
-		log.Infof("LoadMarkers: any = %+v, %d, %+v", result, result.RowsAffected, result.Result)
-
-		var c int64
-
-		if c, err = gorm.G[VectorMarkerItems](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
-			log.Errorf("LoadMarkers: count failed with %s", err)
-			return err
-		} else {
-			log.Infof("marker count = %d", c)
-		}
+	if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+		log.Errorf("LoadMarkers: count failed with %s", err)
+		return err
 	} else {
-		var c int64
-
-		if c, err = gorm.G[VectorMarker](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
-			log.Errorf("LoadMarkers: count failed with %s", err)
-			return err
-		} else {
-			log.Infof("marker count = %d", c)
-		}
+		log.Infof("marker count = %d", c)
 	}
+	/*
+		// Old code as examples of coding to get data out of SQLite...
+			if driver == dbms.SQLite3 {
+				log.Infof("LoadMarkers: e = %s", e)
+				idf, _ := strconv.ParseFloat(e, 64)
+				id := int64(idf)
+				if v, err := gorm.G[VectorMarkerItems](dbms.Db()).Where("rowid = ?", id).First(context.Background()); err != nil {
+					log.Errorf("LoadMarkers: sqlite get id failed with %s", err)
+					return err
+				} else {
+					e = v.Embedding.Embed
+				}
 
+				type Result struct {
+					Rowid    int
+					Distance float64
+				}
+
+				var r []Result
+
+				if err = gorm.G[Result](dbms.Db()).
+					Table("vector_marker_items").
+					Select("rowid, distance").
+					Where("embedding match ? and k = ? and distance = ?", e, 5, 0).
+					Scan(context.Background(), &r); err != nil {
+					log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
+					return err
+				}
+				log.Infof("LoadMarkers: result1 = %+v", r)
+
+				if err = gorm.G[VectorMarkerItems](dbms.Db()).
+					Select("rowid, distance").
+					Where(DBEmbedQuery("embedding").Equals(0.0, e)).
+					Scan(context.Background(), &r); err != nil {
+					log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
+					return err
+				}
+				log.Infof("LoadMarkers: result2 = %+v", r)
+
+				result := gorm.WithResult()
+				if err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), "select count(*) FROM `vector_marker_items` WHERE `embedding` match ? AND k = 5 AND distance = 0", e); err != nil {
+					log.Errorf("LoadMarkers: any exec failed with %s", err)
+					return err
+				}
+				log.Infof("LoadMarkers: any = %+v, %d, %+v", result, result.RowsAffected, result.Result)
+
+				var c int64
+
+				if c, err = gorm.G[VectorMarkerItems](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+					log.Errorf("LoadMarkers: count failed with %s", err)
+					return err
+				} else {
+					log.Infof("marker count = %d", c)
+				}
+			} else {
+				var c int64
+
+				if c, err = gorm.G[VectorMarker](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+					log.Errorf("LoadMarkers: count failed with %s", err)
+					return err
+				} else {
+					log.Infof("marker count = %d", c)
+				}
+			}
+	*/
 	return
 }
 
 // createDBMSMarkers uses Gorm to create the records in the database
-func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, sqliteEmbeddings *[]VectorMarkerItems, log *logrus.Logger) (err error) {
+func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, faceEmbeddings *[]VectorMarkerFace, log *logrus.Logger) (err error) {
 	switch driver {
 	case dbms.SQLite3:
-		if err = dbms.Db().Create(&sqliteEmbeddings).Error; err != nil {
-			log.Errorf("LoadMarkers: Create record set up to %d failed with %s", record, err)
-			return err
-		}
 		fallthrough
 	case dbms.MySQL:
 		fallthrough
 	case dbms.Postgres:
+		if err = dbms.Db().Create(&faceEmbeddings).Error; err != nil {
+			log.Errorf("LoadMarkers: Create face embeddings record set up to %d failed with %s", record, err)
+			return err
+		}
 		if err = dbms.Db().Create(&markers).Error; err != nil {
-			log.Errorf("LoadMarkers: Create record set up to %d failed with %s", record, err)
+			log.Errorf("LoadMarkers: Create markers record set up to %d failed with %s", record, err)
 			return err
 		}
 	case dbms.Qdrant:
