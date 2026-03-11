@@ -270,12 +270,6 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 			return err
 		}
 		defer db.Close()
-		/*
-			if err = dbms.Db().Exec("CREATE TABLE `vector_markers` ( `marker_uid` varbinary(42) NOT NULL, `embedding` VECTOR(512) NOT NULL, PRIMARY KEY (`marker_uid`), VECTOR INDEX (embedding) M=8 DISTANCE=cosine ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;").Error; err != nil {
-				log.Errorf("LoadMarkers: vector_markers setup failed with %s", err)
-				return err
-			}
-		*/
 		if err = migrateVectorMarkers(); err != nil {
 			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
 			return err
@@ -292,9 +286,39 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 			return err
 		}
 		defer db.Close()
-		if err = dbms.Db().Exec("CREATE TABLE `vector_markers` ( `marker_uid` bytea NOT NULL, `embedding` VECTOR(512) NOT NULL, PRIMARY KEY (`marker_uid`), VECTOR INDEX (embedding) M=8 DISTANCE=cosine ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci").Error; err != nil {
-			log.Errorf("LoadMarkers: vector_markers setup failed with %s", err)
+		result := gorm.WithResult()
+		err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), "select typname from pg_type where typname = ?", "vector")
+		if err != nil {
+			log.Errorf("LoadMarkers: extension check for vector failed with %s", err)
 			return err
+		}
+		if result.RowsAffected == 0 {
+			err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), "CREATE EXTENSION IF NOT EXISTS vector")
+			if err != nil {
+				log.Errorf("LoadMarkers: extension creation for vector failed with %s", err)
+				return err
+			}
+			type PostgresDBOwners struct {
+				DbOwner string
+			}
+			owner, err := gorm.G[PostgresDBOwners](dbms.Db()).
+				Raw("select pg_catalog.pg_get_userbyid(datdba) AS db_owner from pg_catalog.pg_database where datname = current_database()").
+				Find(context.Background())
+			if err != nil {
+				log.Errorf("LoadMarkers: database owner query failed with %s", err)
+				return err
+			}
+			if len(owner) == 1 {
+				err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO %s", owner[0].DbOwner))
+				if err != nil {
+					log.Errorf("LoadMarkers: permission grant to owner failed with %s", err)
+					return err
+				}
+			} else {
+				log.Error("LoadMarkers: no database owner returned")
+				return fmt.Errorf("%s", "LoadMarkers: no database owner returned")
+			}
+
 		}
 		if err = migrateVectorMarkers(); err != nil {
 			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
