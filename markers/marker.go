@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -20,8 +19,6 @@ import (
 	"github.com/keif888/vector/dbms"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
-	"gorm.io/gorm/schema"
 )
 
 const (
@@ -52,55 +49,10 @@ const (
 	CSVTimestampFormat = "2006-01-02T15:04:05.000000000Z"
 )
 
+// VectorMarkerItems represents an sqlite vector table
 type VectorMarkerItems struct {
 	Rowid     int
-	Embedding string
-}
-
-type Embed struct {
-	Value string
-}
-
-// GormDBDataType returns gorm DB data type based on the current using database.
-func (Embed) GormDBDataType(db *gorm.DB, field *schema.Field) string {
-	switch db.Name() {
-	case "mysql":
-		return fmt.Sprintf("VECTOR(%d) NOT NULL", field.Size)
-	case "postgres":
-		return fmt.Sprintf("VECTOR(%d)", field.Size)
-	case "sqlite":
-		return "text" // SQLite needs a virtual table for vector data types, so needs to be handled separately.
-	default:
-		return ""
-	}
-}
-
-func (e *Embed) Scan(value interface{}) error {
-	valueBytes, ok := value.([]byte)
-	if !ok {
-		return errors.New("unable to convert value to bytes")
-	}
-	e.Value = string(valueBytes)
-	return nil
-}
-
-func (e Embed) GormDataType() string {
-	return "vectorembedding"
-}
-
-func (e Embed) GormValue(ctx context.Context, db *gorm.DB) clause.Expr {
-	switch db.Name() {
-	case dbms.MySQL:
-		return clause.Expr{
-			SQL:  "vec_fromtext(?)",
-			Vars: []interface{}{e.Value},
-		}
-	default:
-		return clause.Expr{
-			SQL:  "?",
-			Vars: []interface{}{e.Value},
-		}
-	}
+	Embedding DBEmbed
 }
 
 // VectorMarker represents an image marker point.
@@ -116,7 +68,7 @@ type VectorMarker struct {
 	SubjSrc       string     `gorm:"type:bytes;size:8;index:idx_markers_subj_uid_src;default:'';" json:"SubjSrc" yaml:"SubjSrc,omitempty"`
 	FaceID        string     `gorm:"type:bytes;size:64;index;" json:"FaceID" yaml:"FaceID,omitempty"`
 	FaceDist      float64    `gorm:"default:-1;" json:"FaceDist" yaml:"FaceDist,omitempty"`
-	Embedding     Embed      `gorm:"size:512;" json:"-" yaml:"EmbeddingsJSON,omitempty"`
+	Embedding     DBEmbed    `gorm:"size:512;" json:"-" yaml:"EmbeddingsJSON,omitempty"`
 	X             float32    `json:"X" yaml:"X,omitempty"`
 	Y             float32    `json:"Y" yaml:"Y,omitempty"`
 	W             float32    `json:"W" yaml:"W,omitempty"`
@@ -194,7 +146,7 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 			MarkerInvalid: false,
 			SubjSrc:       SrcAuto,
 			FaceDist:      rand.Float64(), //nolint:gosec // test data generation crypto rand not required
-			Embedding:     Embed{Value: embedding.JSON()},
+			Embedding:     DBEmbed{Embed: embedding.JSON()},
 			X:             rand.Float32(), //nolint:gosec // test data generation crypto rand not required
 			Y:             rand.Float32(), //nolint:gosec // test data generation crypto rand not required
 			W:             rand.Float32(), //nolint:gosec // test data generation crypto rand not required
@@ -242,12 +194,17 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 	return nil
 }
 
-func setupGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
+func connectGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
 	db = &dbms.DbConn{
 		Driver: driver,
 		Dsn:    dsn,
 	}
 	dbms.SetDbProvider(db)
+	return
+}
+
+func setupGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
+	db, err = connectGormDB(driver, dsn)
 
 	if dbms.Db().Migrator().HasTable(&VectorMarker{}) {
 		return db, dbms.Db().Migrator().DropTable(&VectorMarker{})
@@ -449,7 +406,7 @@ ProcessFileLoop:
 		case dbms.SQLite3:
 			sqliteEmbeddings[counter] = VectorMarkerItems{
 				Rowid:     record,
-				Embedding: csvRecord[11],
+				Embedding: DBEmbed{Embed: csvRecord[11]},
 			}
 			embedding = strconv.Itoa(record)
 		case dbms.MySQL:
@@ -483,7 +440,7 @@ ProcessFileLoop:
 			MarkerInvalid: markerInvalid,
 			SubjSrc:       csvRecord[8],
 			FaceDist:      faceDist,
-			Embedding:     Embed{Value: embedding},
+			Embedding:     DBEmbed{Embed: embedding},
 			X:             x,
 			Y:             y,
 			W:             w,
@@ -511,6 +468,91 @@ ProcessFileLoop:
 	}
 
 	return nil
+}
+
+func QueryMarkers(driver, dsn string, log *logrus.Logger) (err error) {
+	var db *dbms.DbConn
+
+	if db, err = connectGormDB(driver, dsn); err != nil {
+		db.Close()
+		log.Errorf("LoadMarkers: database setup failed with %s", err)
+		return err
+	}
+	defer db.Close()
+
+	var e string
+	if m, err := gorm.G[VectorMarker](dbms.Db()).First(context.Background()); err != nil {
+		log.Errorf("LoadMarkers: first failed with %s", err)
+		return err
+	} else {
+		log.Infof("marker 1st = %+v", m)
+		e = m.Embedding.Embed
+	}
+
+	if driver == dbms.SQLite3 {
+		log.Infof("LoadMarkers: e = %s", e)
+		idf, _ := strconv.ParseFloat(e, 64)
+		id := int64(idf)
+		if v, err := gorm.G[VectorMarkerItems](dbms.Db()).Where("rowid = ?", id).First(context.Background()); err != nil {
+			log.Errorf("LoadMarkers: sqlite get id failed with %s", err)
+			return err
+		} else {
+			e = v.Embedding.Embed
+		}
+
+		type Result struct {
+			Rowid    int
+			Distance float64
+		}
+
+		var r []Result
+
+		if err = gorm.G[Result](dbms.Db()).
+			Table("vector_marker_items").
+			Select("rowid, distance").
+			Where("embedding match ? and k = ? and distance = ?", e, 5, 0).
+			Scan(context.Background(), &r); err != nil {
+			log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
+			return err
+		}
+		log.Infof("LoadMarkers: result1 = %+v", r)
+
+		if err = gorm.G[VectorMarkerItems](dbms.Db()).
+			Select("rowid, distance").
+			Where(DBEmbedQuery("embedding").Equals(0.0, e)).
+			Scan(context.Background(), &r); err != nil {
+			log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
+			return err
+		}
+		log.Infof("LoadMarkers: result2 = %+v", r)
+
+		result := gorm.WithResult()
+		if err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), "select count(*) FROM `vector_marker_items` WHERE `embedding` match ? AND k = 5 AND distance = 0", e); err != nil {
+			log.Errorf("LoadMarkers: any exec failed with %s", err)
+			return err
+		}
+		log.Infof("LoadMarkers: any = %+v, %d, %+v", result, result.RowsAffected, result.Result)
+
+		var c int64
+
+		if c, err = gorm.G[VectorMarkerItems](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+			log.Errorf("LoadMarkers: count failed with %s", err)
+			return err
+		} else {
+			log.Infof("marker count = %d", c)
+		}
+	} else {
+		var c int64
+
+		if c, err = gorm.G[VectorMarker](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+			log.Errorf("LoadMarkers: count failed with %s", err)
+			return err
+		} else {
+			log.Infof("marker count = %d", c)
+		}
+	}
+
+	return
 }
 
 func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, sqliteEmbeddings *[]VectorMarkerItems, log *logrus.Logger) (err error) {

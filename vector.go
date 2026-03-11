@@ -43,8 +43,9 @@ func main() {
 	log.Out = os.Stdout
 
 	dbms.SetLog(log)
+	markers.SetLog(log)
 
-	flag.StringVar(&action, "action", "gencsv", "Take one of the following actions gencsv, loadcsv, cluster")
+	flag.StringVar(&action, "action", "gencsv", "Take one of the following actions gencsv, loadcsv, cluster, query")
 	flag.StringVar(&fileName, "filename", "", "The name of the CSV file to generate or load")
 	flag.BoolVar(&force, "overwrite", false, "Overwrite the csv file?")
 	flag.IntVar(&numberOfMarkers, "markers", 100, "Number of markers to generate")
@@ -93,6 +94,17 @@ func main() {
 		if len(dsnString) < 3 {
 			flagErrorAndExit("dsn %v is to short", dsnString)
 		}
+	case "query":
+		if _, ok := dbms.Drivers[driver]; !ok {
+			flagErrorAndExit("driver %v is not valid", driver)
+		}
+		if len(dsnString) < 3 {
+			flagErrorAndExit("dsn %v is to short", dsnString)
+		}
+		if err := markers.QueryMarkers(driver, dsnString, log); err != nil {
+			flagErrorAndExit("Query failed with %s", err)
+		}
+
 	default:
 		flagErrorAndExit("action %s was not recognised", action)
 	}
