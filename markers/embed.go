@@ -28,7 +28,6 @@ type DBEmbed struct {
 
 // value return embed value, implement driver.Valuer interface
 func (e DBEmbed) Value() (driver.Value, error) {
-	log.Infof("DBEmbed.Value: Value = %+v", e)
 	if len(e.Embed) == 0 {
 		return nil, nil
 	}
@@ -43,14 +42,14 @@ func (DBEmbed) GormDBDataType(db *gorm.DB, field *schema.Field) string {
 	case "postgres":
 		return fmt.Sprintf("VECTOR(%d)", field.Size)
 	case "sqlite":
-		return fmt.Sprintf("FLOAT(%d)", field.Size)
+		// return fmt.Sprintf("FLOAT(%d)", field.Size)
+		return "blob"
 	default:
 		return ""
 	}
 }
 
 func (e *DBEmbed) Scan(value interface{}) error {
-	log.Infof("DBEmbed.Scan: type = %T", value)
 	var valueBytes []byte
 	if s, ok := value.(fmt.Stringer); ok {
 		e.Embed = s.String()
@@ -71,7 +70,6 @@ func (e *DBEmbed) Scan(value interface{}) error {
 		e.Embed = v
 		return nil
 	case float64:
-		log.Infof("DBEmbed.Scan: value = %+v", v)
 		e.Embed = fmt.Sprintf("%f", v)
 		return nil
 	default:
