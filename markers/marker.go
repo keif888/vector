@@ -194,6 +194,7 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 	return nil
 }
 
+// connectGormDB connects to the database
 func connectGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
 	db = &dbms.DbConn{
 		Driver: driver,
@@ -203,8 +204,9 @@ func connectGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
 	return
 }
 
+// setupGormDB performs initial cleanup for LoadMarkers
 func setupGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
-	db, err = connectGormDB(driver, dsn)
+	db, _ = connectGormDB(driver, dsn)
 
 	if dbms.Db().Migrator().HasTable(&VectorMarker{}) {
 		return db, dbms.Db().Migrator().DropTable(&VectorMarker{})
@@ -212,6 +214,7 @@ func setupGormDB(driver, dsn string) (db *dbms.DbConn, err error) {
 	return db, nil
 }
 
+// migrateVectorMarkers uses Gorm to create/alter the vector_marker table
 func migrateVectorMarkers() (err error) {
 	return dbms.Db().AutoMigrate(&VectorMarker{})
 }
@@ -555,6 +558,7 @@ func QueryMarkers(driver, dsn string, log *logrus.Logger) (err error) {
 	return
 }
 
+// createDBMSMarkers uses Gorm to create the records in the database
 func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, sqliteEmbeddings *[]VectorMarkerItems, log *logrus.Logger) (err error) {
 	switch driver {
 	case dbms.SQLite3:
@@ -576,6 +580,7 @@ func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, sqlit
 	return nil
 }
 
+// normalizeEmbedding is something that PhotoPrism uses, so it's replicated here.
 func normalizeEmbedding(e Embedding) {
 	var sum float64
 
@@ -650,6 +655,7 @@ func (e Embedding) JSON() string {
 	}
 }
 
+// MariaDBEmbedding encodes an Embedding in the native MariaDB format (set of IEEE 754 floating point numbers)
 func MariaDBEmbedding(values Embedding) (result []byte) {
 	result = make([]byte, len(values)*4)
 	for i, value := range values {
