@@ -79,7 +79,7 @@ func main() {
 		if !files.FileExists(fileName) {
 			flagErrorAndExit("action %s and file %s does not exist", action, fileName)
 		}
-		if _, ok := dbms.Drivers[driver]; !ok {
+		if _, ok := dsn.Params[driver]; !ok {
 			flagErrorAndExit("driver %s is not valid", driver)
 		}
 		d, s := dsn.Parse(dsnString)
@@ -94,7 +94,7 @@ func main() {
 			flagErrorAndExit("Generation failed with %s", err)
 		}
 	case "cluster":
-		if _, ok := dbms.Drivers[driver]; !ok {
+		if _, ok := dsn.Params[driver]; !ok {
 			flagErrorAndExit("driver %v is not valid", driver)
 		}
 		d, s := dsn.Parse(dsnString)
@@ -105,7 +105,7 @@ func main() {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
 	case "query":
-		if _, ok := dbms.Drivers[driver]; !ok {
+		if _, ok := dsn.Params[driver]; !ok {
 			flagErrorAndExit("driver %v is not valid", driver)
 		}
 		d, s := dsn.Parse(dsnString)
