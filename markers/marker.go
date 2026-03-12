@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/keif888/vector/dbms"
+	"github.com/keif888/vector/pkg/dsn"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -235,11 +236,11 @@ func migrateVectorMarkers() (err error) {
 }
 
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
-func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
+func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 	var db *dbms.DbConn
-	switch driver {
+	switch dsn.Driver {
 	case dbms.MySQL:
-		if db, err = setupGormDB(driver, dsn); err != nil {
+		if db, err = setupGormDB(dsn.Driver, dsn.ToString()); err != nil {
 			db.Close()
 			log.Errorf("LoadMarkers: database setup failed with %s", err)
 			return err
@@ -260,7 +261,7 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 		}
 
 	case dbms.Postgres:
-		if db, err = setupGormDB(driver, dsn); err != nil {
+		if db, err = setupGormDB(dsn.Driver, dsn.ToString()); err != nil {
 			db.Close()
 			log.Errorf("LoadMarkers: database setup failed with %s", err)
 			return err
@@ -315,7 +316,7 @@ func LoadMarkers(fileName, driver, dsn string, log *logrus.Logger) (err error) {
 		}
 
 	case dbms.SQLite3:
-		if db, err = setupGormDB(driver, dsn); err != nil {
+		if db, err = setupGormDB(dsn.Driver, dsn.ToString()); err != nil {
 			db.Close()
 			log.Errorf("LoadMarkers: database setup failed with %s", err)
 			return err
@@ -460,7 +461,7 @@ ProcessFileLoop:
 		record++
 		if counter == 100 {
 			log.Infof("processing %d with counter %d", record, counter)
-			if err = createDBMSMarkers(driver, record, &markers, &faceEmbeddings, log); err != nil {
+			if err = createDBMSMarkers(dsn.Driver, record, &markers, &faceEmbeddings, log); err != nil {
 				return err
 			}
 			counter = 0
@@ -469,16 +470,16 @@ ProcessFileLoop:
 
 	if counter > 0 {
 		markers = markers[:counter]
-		return createDBMSMarkers(driver, record, &markers, &faceEmbeddings, log)
+		return createDBMSMarkers(dsn.Driver, record, &markers, &faceEmbeddings, log)
 	}
 
 	return nil
 }
 
-func QueryMarkers(driver, dsn string, log *logrus.Logger) (err error) {
+func QueryMarkers(dsn dsn.DSN, log *logrus.Logger) (err error) {
 	var db *dbms.DbConn
 
-	if db, err = connectGormDB(driver, dsn); err != nil {
+	if db, err = connectGormDB(dsn.Driver, dsn.ToString()); err != nil {
 		db.Close()
 		log.Errorf("LoadMarkers: database setup failed with %s", err)
 		return err

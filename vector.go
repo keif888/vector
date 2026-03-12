@@ -10,6 +10,7 @@ import (
 	"github.com/keif888/vector/dbms"
 	"github.com/keif888/vector/files"
 	"github.com/keif888/vector/markers"
+	"github.com/keif888/vector/pkg/dsn"
 	"github.com/sirupsen/logrus"
 )
 
@@ -79,29 +80,42 @@ func main() {
 			flagErrorAndExit("action %s and file %s does not exist", action, fileName)
 		}
 		if _, ok := dbms.Drivers[driver]; !ok {
-			flagErrorAndExit("driver %v is not valid", driver)
+			flagErrorAndExit("driver %s is not valid", driver)
 		}
-		if len(dsnString) < 3 {
-			flagErrorAndExit("dsn %v is to short", dsnString)
+		d, s := dsn.Parse(dsnString)
+		log.Infof("main: %+v with %t success", d, s)
+		if !s {
+			flagErrorAndExit("dsn %s failed to parse", dsnString)
 		}
-		if err := markers.LoadMarkers(fileName, driver, dsnString, log); err != nil {
+		if d.Driver != strings.ToLower(driver) {
+			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
+		}
+		if err := markers.LoadMarkers(fileName, d, log); err != nil {
 			flagErrorAndExit("Generation failed with %s", err)
 		}
 	case "cluster":
 		if _, ok := dbms.Drivers[driver]; !ok {
 			flagErrorAndExit("driver %v is not valid", driver)
 		}
-		if len(dsnString) < 3 {
-			flagErrorAndExit("dsn %v is to short", dsnString)
+		d, s := dsn.Parse(dsnString)
+		if !s {
+			flagErrorAndExit("dsn %s failed to parse", dsnString)
+		}
+		if d.Driver != strings.ToLower(driver) {
+			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
 	case "query":
 		if _, ok := dbms.Drivers[driver]; !ok {
 			flagErrorAndExit("driver %v is not valid", driver)
 		}
-		if len(dsnString) < 3 {
-			flagErrorAndExit("dsn %v is to short", dsnString)
+		d, s := dsn.Parse(dsnString)
+		if !s {
+			flagErrorAndExit("dsn %s failed to parse", dsnString)
 		}
-		if err := markers.QueryMarkers(driver, dsnString, log); err != nil {
+		if d.Driver != strings.ToLower(driver) {
+			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
+		}
+		if err := markers.QueryMarkers(d, log); err != nil {
 			flagErrorAndExit("Query failed with %s", err)
 		}
 
