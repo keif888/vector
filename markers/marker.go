@@ -18,6 +18,7 @@ import (
 
 	"github.com/keif888/vector/dbms"
 	"github.com/keif888/vector/pkg/dsn"
+	"github.com/qdrant/go-client/qdrant"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -57,6 +58,11 @@ type VectorMarkerFace struct {
 	Embedding   DBEmbed `gorm:"size:512;"`
 }
 
+// TableName returns the entity table name.
+func (VectorMarkerFace) TableName() string {
+	return "vector_marker_faces"
+}
+
 // VectorMarker represents an image marker point.
 type VectorMarker struct {
 	MarkerUID      string          `gorm:"type:bytes;size:42;primaryKey;autoIncrement:false;" json:"UID" yaml:"UID"`
@@ -85,8 +91,16 @@ type VectorMarker struct {
 	UpdatedAt      time.Time
 }
 
+// TableName returns the entity table name.
+func (VectorMarker) TableName() string {
+	return "vector_markers"
+}
+
 // Embedding represents a face embedding.
 type Embedding []float64
+
+// Embedding32 represents a face embedding in float32.
+type Embedding32 []float32
 
 // GenerateMarkers populates fileName with numberOfMarkers of randomly generated data
 func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (err error) {
@@ -235,6 +249,46 @@ func migrateVectorMarkers() (err error) {
 	return
 }
 
+// connectQdrant connects to the database
+func connectQdrant(dsn dsn.DSN) {
+	conn := &dbms.QConn{
+		Dsn: dsn,
+	}
+
+	dbms.SetClientProvider(conn)
+}
+
+// setupQdrantDB uses the Qdrant client to connect and performs initial cleanup for LoadMarkers
+func setupQdrantDB(dsn dsn.DSN) (err error) {
+	connectQdrant(dsn)
+
+	if ok, err := dbms.QClient().CollectionExists(context.Background(), VectorMarker{}.TableName()); err != nil {
+		log.Errorf("setupQdrantDB: CollectionExists failed with %s", err)
+		return err
+	} else {
+		if ok {
+			if err := dbms.QClient().DeleteCollection(context.Background(), VectorMarker{}.TableName()); err != nil {
+				log.Errorf("setupQdrantDB: DeleteCollection failed with %s", err)
+				return err
+			}
+		}
+	}
+
+	// Looks like Qdrant doesn't need to split this out.
+	// if ok, err := dbms.QClient().CollectionExists(context.Background(), VectorMarkerFace{}.TableName()); err != nil {
+	// 	log.Errorf("setupQdrantDB: CollectionExists failed with %s", err)
+	// 	return err
+	// } else {
+	// 	if ok {
+	// 		if err := dbms.QClient().DeleteCollection(context.Background(), VectorMarkerFace{}.TableName()); err != nil {
+	// 			log.Errorf("setupQdrantDB: DeleteCollection failed with %s", err)
+	// 			return err
+	// 		}
+	// 	}
+	// }
+	return nil
+}
+
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
 func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 	var db *dbms.DbConn
@@ -341,7 +395,33 @@ func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 			return err
 		}
 	case dbms.Qdrant:
+		if err = setupQdrantDB(dsn); err != nil {
+			if err = dbms.QClient().Close(); err != nil {
+				log.Errorf("LoadMarkers: Client Close failed with %s", err)
+			}
+			log.Errorf("LoadMarkers: database setup failed with %s", err)
+			return err
+		}
+		defer func() {
+			if err = dbms.QClient().Close(); err != nil {
+				log.Errorf("LoadMarkers: Client Close failed with %s", err)
+			}
+		}()
 
+		if err = dbms.QClient().CreateCollection(context.Background(), &qdrant.CreateCollection{
+			CollectionName: VectorMarker{}.TableName(),
+			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
+				Size:     512,
+				Distance: qdrant.Distance_Cosine,
+				Datatype: qdrant.Datatype_Float32.Enum(),
+				MultivectorConfig: &qdrant.MultiVectorConfig{
+					Comparator: qdrant.MultiVectorComparator_MaxSim,
+				},
+			}),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateCollection failed with %s", err)
+			return err
+		}
 	}
 
 	var csvFile *os.File
@@ -595,7 +675,30 @@ func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, faceE
 			return err
 		}
 	case dbms.Qdrant:
-
+		points := make([]*qdrant.PointStruct, len(*markers))
+		embed32 := make(Embedding32, 512)
+		for i, v := range *markers {
+			e := (*faceEmbeddings)[i].Embedding.Embed
+			if err = json.Unmarshal([]byte(e), &embed32); err != nil {
+				log.Errorf("unable to unmarshal %s", err)
+			}
+			points[i] = &qdrant.PointStruct{
+				Id:      qdrant.NewIDNum(uint64(i)),
+				Vectors: qdrant.NewVectorsDense(embed32),
+				Payload: qdrant.NewValueMap(map[string]any{
+					"MarkerUID": v.MarkerUID,
+					"FileUID":   v.FileUID,
+				}),
+			}
+		}
+		if r, err := dbms.QClient().Upsert(context.Background(), &qdrant.UpsertPoints{
+			CollectionName: VectorMarker{}.TableName(),
+			Points:         points,
+		}); err != nil {
+			log.Errorf("Upsert failed with %s", err)
+		} else {
+			log.Infof("Upsert result = %+v", r)
+		}
 	}
 	return nil
 }
