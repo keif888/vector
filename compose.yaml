@@ -72,9 +72,13 @@ services:
       - "traefik.http.routers.qdrant.tls.domains[0].sans=*.localssl.dev"
       - "traefik.http.routers.qdrant.tls=true"
     expose:
-      - 6333
-      - 6334
-      - 6335
+      - "6333"
+      - "6334"
+      - "6335"
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+      - "6335:6335"
     volumes:
       - "./.qdrant.yaml:/qdrant/config/production.yaml"
       - "./storage/services/qdrant:/qdrant/storage"
