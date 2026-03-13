@@ -411,12 +411,14 @@ func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 		if err = dbms.QClient().CreateCollection(context.Background(), &qdrant.CreateCollection{
 			CollectionName: VectorMarker{}.TableName(),
 			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
-				Size:     512,
+				Size: 512,
+				// Distance: qdrant.Distance_Cosine,
+				// Datatype: qdrant.Datatype_Float32.Enum(),
 				Distance: qdrant.Distance_Cosine,
-				Datatype: qdrant.Datatype_Float32.Enum(),
-				MultivectorConfig: &qdrant.MultiVectorConfig{
-					Comparator: qdrant.MultiVectorComparator_MaxSim,
-				},
+				Datatype: qdrant.Datatype_Default.Enum(),
+				// MultivectorConfig: &qdrant.MultiVectorConfig{
+				// 	Comparator: qdrant.MultiVectorComparator_MaxSim,
+				// },
 			}),
 		}); err != nil {
 			log.Errorf("LoadMarkers: CreateCollection failed with %s", err)
@@ -440,6 +442,7 @@ func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 	faceEmbeddings := make([]VectorMarkerFace, 100)
 	counter := 0
 	record := 1
+	upto := 0
 	headerRead := false
 	var csvRecord []string
 	var markerReview, markerInvalid bool
@@ -541,125 +544,228 @@ ProcessFileLoop:
 		record++
 		if counter == 100 {
 			log.Infof("processing %d with counter %d", record, counter)
-			if err = createDBMSMarkers(dsn.Driver, record, &markers, &faceEmbeddings, log); err != nil {
+			if err = createDBMSMarkers(dsn.Driver, record, upto, &markers, &faceEmbeddings, log); err != nil {
 				return err
 			}
+			upto += counter
 			counter = 0
 		}
 	}
 
 	if counter > 0 {
 		markers = markers[:counter]
-		return createDBMSMarkers(dsn.Driver, record, &markers, &faceEmbeddings, log)
+		return createDBMSMarkers(dsn.Driver, record, upto, &markers, &faceEmbeddings, log)
 	}
 
 	return nil
 }
 
-func QueryMarkers(dsn dsn.DSN, log *logrus.Logger) (err error) {
-	var db *dbms.DbConn
+func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
+	switch dataSourceName.Driver {
+	case dsn.DriverMySQL, dsn.DriverPostgres, dsn.DriverSQLite3:
+		var db *dbms.DbConn
 
-	if db, err = connectGormDB(dsn.Driver, dsn.ToString()); err != nil {
-		db.Close()
-		log.Errorf("LoadMarkers: database setup failed with %s", err)
-		return err
-	}
-	defer db.Close()
+		if db, err = connectGormDB(dataSourceName.Driver, dataSourceName.ToString()); err != nil {
+			db.Close()
+			log.Errorf("LoadMarkers: database setup failed with %s", err)
+			return err
+		}
+		defer db.Close()
 
-	var mID string
-	if m, err := gorm.G[VectorMarker](dbms.Db()).First(context.Background()); err != nil {
-		log.Errorf("LoadMarkers: VectorMarker first failed with %s", err)
-		return err
-	} else {
-		mID = m.MarkerUID
-	}
+		var mID string
+		if m, err := gorm.G[VectorMarker](dbms.Db()).First(context.Background()); err != nil {
+			log.Errorf("LoadMarkers: VectorMarker first failed with %s", err)
+			return err
+		} else {
+			mID = m.MarkerUID
+		}
 
-	var e string
-	if m, err := gorm.G[VectorMarkerFace](dbms.Db()).Where("marker_uid = ?", mID).First(context.Background()); err != nil {
-		log.Errorf("LoadMarkers: VectorMarkerFace first failed with %s", err)
-		return err
-	} else {
-		e = m.Embedding.Embed
-	}
+		log.Infof("MarkerUID = %s", mID)
 
-	var c int64
+		var e string
+		if m, err := gorm.G[VectorMarkerFace](dbms.Db()).Where("marker_uid = ?", mID).First(context.Background()); err != nil {
+			log.Errorf("LoadMarkers: VectorMarkerFace first failed with %s", err)
+			return err
+		} else {
+			e = m.Embedding.Embed
+		}
 
-	if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
-		log.Errorf("LoadMarkers: count failed with %s", err)
-		return err
-	} else {
-		log.Infof("marker count = %d", c)
-	}
-	/*
-		// Old code as examples of coding to get data out of SQLite...
-			if driver == dbms.SQLite3 {
-				log.Infof("LoadMarkers: e = %s", e)
-				idf, _ := strconv.ParseFloat(e, 64)
-				id := int64(idf)
-				if v, err := gorm.G[VectorMarkerItems](dbms.Db()).Where("rowid = ?", id).First(context.Background()); err != nil {
-					log.Errorf("LoadMarkers: sqlite get id failed with %s", err)
-					return err
+		var c int64
+
+		if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+			log.Errorf("LoadMarkers: count failed with %s", err)
+			return err
+		} else {
+			log.Infof("marker count = %d", c)
+		}
+		/*
+			// Old code as examples of coding to get data out of SQLite...
+				if driver == dbms.SQLite3 {
+					log.Infof("LoadMarkers: e = %s", e)
+					idf, _ := strconv.ParseFloat(e, 64)
+					id := int64(idf)
+					if v, err := gorm.G[VectorMarkerItems](dbms.Db()).Where("rowid = ?", id).First(context.Background()); err != nil {
+						log.Errorf("LoadMarkers: sqlite get id failed with %s", err)
+						return err
+					} else {
+						e = v.Embedding.Embed
+					}
+
+					type Result struct {
+						Rowid    int
+						Distance float64
+					}
+
+					var r []Result
+
+					if err = gorm.G[Result](dbms.Db()).
+						Table("vector_marker_items").
+						Select("rowid, distance").
+						Where("embedding match ? and k = ? and distance = ?", e, 5, 0).
+						Scan(context.Background(), &r); err != nil {
+						log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
+						return err
+					}
+					log.Infof("LoadMarkers: result1 = %+v", r)
+
+					if err = gorm.G[VectorMarkerItems](dbms.Db()).
+						Select("rowid, distance").
+						Where(DBEmbedQuery("embedding").Equals(0.0, e)).
+						Scan(context.Background(), &r); err != nil {
+						log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
+						return err
+					}
+					log.Infof("LoadMarkers: result2 = %+v", r)
+
+					result := gorm.WithResult()
+					if err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), "select count(*) FROM `vector_marker_items` WHERE `embedding` match ? AND k = 5 AND distance = 0", e); err != nil {
+						log.Errorf("LoadMarkers: any exec failed with %s", err)
+						return err
+					}
+					log.Infof("LoadMarkers: any = %+v, %d, %+v", result, result.RowsAffected, result.Result)
+
+					var c int64
+
+					if c, err = gorm.G[VectorMarkerItems](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+						log.Errorf("LoadMarkers: count failed with %s", err)
+						return err
+					} else {
+						log.Infof("marker count = %d", c)
+					}
 				} else {
-					e = v.Embedding.Embed
+					var c int64
+
+					if c, err = gorm.G[VectorMarker](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+						log.Errorf("LoadMarkers: count failed with %s", err)
+						return err
+					} else {
+						log.Infof("marker count = %d", c)
+					}
 				}
+		*/
+	case dsn.DriverQdrant:
+		connectQdrant(dataSourceName)
+		defer func() {
+			if err = dbms.QClient().Close(); err != nil {
+				log.Errorf("QueryMarkers: Client Close failed with %s", err)
+			}
+		}()
 
-				type Result struct {
-					Rowid    int
-					Distance float64
-				}
+		var e Embedding32
+		if result, err := dbms.QClient().Get(context.Background(), &qdrant.GetPoints{
+			CollectionName: VectorMarker{}.TableName(),
+			Ids: []*qdrant.PointId{
+				qdrant.NewIDNum(336),
+			},
+			WithPayload: qdrant.NewWithPayload(true),
+			WithVectors: qdrant.NewWithVectors(true),
+		}); err != nil {
+			log.Errorf("QueryMarkers: Query of Id=336 failed with %s", err)
+			return err
+		} else {
+			// log.Infof("%+v", result)
+			for _, r := range result {
+				log.Infof("MarkerUID = %s", r.Payload["UID"].GetStringValue())
+				v := r.Vectors.GetVector()
+				//v1 := v.GetMultiDense()
+				//e = v1.Vectors[0].Data
+				v1 := v.GetDense()
+				e = v1.Data
+				// log.Infof("%+v", e)
+				// log.Infof("%s", e.JSON())
+				break
+			}
+		}
 
-				var r []Result
-
-				if err = gorm.G[Result](dbms.Db()).
-					Table("vector_marker_items").
-					Select("rowid, distance").
-					Where("embedding match ? and k = ? and distance = ?", e, 5, 0).
-					Scan(context.Background(), &r); err != nil {
-					log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
-					return err
-				}
-				log.Infof("LoadMarkers: result1 = %+v", r)
-
-				if err = gorm.G[VectorMarkerItems](dbms.Db()).
-					Select("rowid, distance").
-					Where(DBEmbedQuery("embedding").Equals(0.0, e)).
-					Scan(context.Background(), &r); err != nil {
-					log.Errorf("LoadMarkers: sqlite rowid distance failed with %s", err)
-					return err
-				}
-				log.Infof("LoadMarkers: result2 = %+v", r)
-
-				result := gorm.WithResult()
-				if err = gorm.G[any](dbms.Db(), result).Exec(context.Background(), "select count(*) FROM `vector_marker_items` WHERE `embedding` match ? AND k = 5 AND distance = 0", e); err != nil {
-					log.Errorf("LoadMarkers: any exec failed with %s", err)
-					return err
-				}
-				log.Infof("LoadMarkers: any = %+v, %d, %+v", result, result.RowsAffected, result.Result)
-
-				var c int64
-
-				if c, err = gorm.G[VectorMarkerItems](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
-					log.Errorf("LoadMarkers: count failed with %s", err)
-					return err
-				} else {
-					log.Infof("marker count = %d", c)
-				}
+		// Count only works against named vectors or payload.
+		/*
+			exact := true
+			if c, err := dbms.QClient().Count(context.Background(), &qdrant.CountPoints{
+				CollectionName: VectorMarker{}.TableName(),
+				Exact:          &exact,
+				Filter: &qdrant.Filter{
+					Should: []*qdrant.Condition{
+						qdrant.NewHasVector(e.JSON()),
+					},
+				},
+			}); err != nil {
+				log.Errorf("QueryMarkers: Count failed with %s", err)
+				return err
 			} else {
-				var c int64
+				log.Infof("marker count = %d", c)
+			}
+		*/
 
-				if c, err = gorm.G[VectorMarker](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
-					log.Errorf("LoadMarkers: count failed with %s", err)
-					return err
-				} else {
-					log.Infof("marker count = %d", c)
+		/*
+			// This returns the 1st 10 that have a score > than the one specified.
+			// Which is not what we want.  (and 10 is a default limit which can be adjusted in the query)
+			score := float32(0.0)
+			if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+				CollectionName: VectorMarker{}.TableName(),
+				Query:          qdrant.NewQueryDense(e),
+				ScoreThreshold: &score,
+				WithPayload:    qdrant.NewWithPayload(true),
+				WithVectors:    qdrant.NewWithVectors(true),
+			}); err != nil {
+				log.Errorf("QueryMarkers: Query of Id=5 failed with %s", err)
+				return err
+			} else {
+				log.Infof("Search found %d results", len(result))
+				for _, r := range result {
+					// e = r.Vectors.String()
+					log.Infof("Id = %+v, Score = %f", r.Id, r.Score)
 				}
 			}
-	*/
+		*/
+		score := e[0]
+		score = float32(0.98)
+		limit := uint64(10)
+		if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+			CollectionName: VectorMarker{}.TableName(),
+			Query:          qdrant.NewQueryDense(e), // 4 results
+			// Query: qdrant.NewQueryNearest(qdrant.NewVectorInputDense(e)), // 4 results
+			// Query:          qdrant.NewQueryID(qdrant.NewIDNum(336)), // 3 results (missing 336)
+			Limit:          &limit,
+			ScoreThreshold: &score,
+			WithPayload:    qdrant.NewWithPayload(true),
+			WithVectors:    qdrant.NewWithVectors(true),
+		}); err != nil {
+			log.Errorf("QueryMarkers: Query of Id=336 failed with %s", err)
+			return err
+		} else {
+			log.Infof("Search found %d results", len(result))
+			for _, r := range result {
+				// e = r.Vectors.String()
+				log.Infof("Id = %+v, Score = %f, MarkerUID = %s", r.Id, r.Score, r.Payload["UID"].GetStringValue())
+			}
+		}
+
+	}
 	return
 }
 
 // createDBMSMarkers uses Gorm to create the records in the database
-func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, faceEmbeddings *[]VectorMarkerFace, log *logrus.Logger) (err error) {
+func createDBMSMarkers(driver string, record, upto int, markers *[]VectorMarker, faceEmbeddings *[]VectorMarkerFace, log *logrus.Logger) (err error) {
 	switch driver {
 	case dbms.SQLite3:
 		fallthrough
@@ -676,21 +782,30 @@ func createDBMSMarkers(driver string, record int, markers *[]VectorMarker, faceE
 		}
 	case dbms.Qdrant:
 		points := make([]*qdrant.PointStruct, len(*markers))
-		embed32 := make(Embedding32, 512)
+		var payload map[string]any
 		for i, v := range *markers {
 			e := (*faceEmbeddings)[i].Embedding.Embed
+			embed32 := make(Embedding32, 512)
 			if err = json.Unmarshal([]byte(e), &embed32); err != nil {
-				log.Errorf("unable to unmarshal %s", err)
+				log.Errorf("unable to unmarshal(e) %s", err)
 			}
+			if jsonBytes, err := json.Marshal(v); err != nil {
+				log.Errorf("unable to marshal(v) %s", err)
+			} else {
+				if err = json.Unmarshal(jsonBytes, &payload); err != nil {
+					log.Errorf("unable to unmashal(jsonBytes) %s", err)
+				}
+			}
+
 			points[i] = &qdrant.PointStruct{
-				Id:      qdrant.NewIDNum(uint64(i)),
+				Id:      qdrant.NewIDNum(uint64(upto + i)),
 				Vectors: qdrant.NewVectorsDense(embed32),
-				Payload: qdrant.NewValueMap(map[string]any{
-					"MarkerUID": v.MarkerUID,
-					"FileUID":   v.FileUID,
-				}),
+				Payload: qdrant.NewValueMap(
+					payload,
+				),
 			}
 		}
+
 		if r, err := dbms.QClient().Upsert(context.Background(), &qdrant.UpsertPoints{
 			CollectionName: VectorMarker{}.TableName(),
 			Points:         points,
@@ -764,6 +879,22 @@ func Charset(length int, charset string) string {
 
 // JSON returns the Embedding as a formatted JSON string
 func (e Embedding) JSON() string {
+
+	var noResult = ""
+
+	if len(e) < 1 {
+		return noResult
+	}
+
+	if result, err := json.Marshal(e); err != nil {
+		return noResult
+	} else {
+		return string(result)
+	}
+}
+
+// JSON returns the Embedding as a formatted JSON string
+func (e Embedding32) JSON() string {
 
 	var noResult = ""
 
