@@ -784,6 +784,7 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 		score := e[0]
 		score = float32(0.9999995)
 		limit := uint64(10)
+		// Return up to 10 results, with full data
 		if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 			CollectionName: VectorMarker{}.TableName(),
 			Query:          qdrant.NewQueryDense(e), // 4 results
@@ -803,8 +804,9 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 				log.Infof("Id = %+v, Score = %f, MarkerUID = %s", r.Id, r.Score, r.Payload["UID"].GetStringValue())
 			}
 		}
+		// Simulate Count
 		score = float32(0.07)
-		limit = uint64(100)
+		limit = uint64(100000)
 		if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 			CollectionName: VectorMarker{}.TableName(),
 			Query:          qdrant.NewQueryDense(e), // 4 results
@@ -812,17 +814,13 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 			// Query:          qdrant.NewQueryID(qdrant.NewIDNum(336)), // 3 results (missing 336)
 			Limit:          &limit,
 			ScoreThreshold: &score,
-			WithPayload:    qdrant.NewWithPayload(true),
-			WithVectors:    qdrant.NewWithVectors(true),
+			WithPayload:    qdrant.NewWithPayload(false),
+			WithVectors:    qdrant.NewWithVectors(false),
 		}); err != nil {
 			log.Errorf("QueryMarkers: Query of Id=336 failed with %s", err)
 			return err
 		} else {
 			log.Infof("Search found %d results", len(result))
-			for _, r := range result {
-				// e = r.Vectors.String()
-				log.Infof("Id = %+v, Score = %f, MarkerUID = %s", r.Id, r.Score, r.Payload["UID"].GetStringValue())
-			}
 		}
 
 	}
