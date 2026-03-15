@@ -22,6 +22,14 @@ go run vector.go -db=qdrant -dsn="host=localhost port=6334 api-key=photoprism" -
 
 ```
 
+## Notes
+
+1. SQLite loads fast (10s for 25,000 markers), and queries slowest (199ms)
+1. MariaDB loads slowest (66s for 25,000 markers), and queries fastest (57ms)
+1. Postgres loads slow (50s for 25,000 markers), and queries slow (195ms)
+1. Qdrant loads fastest (8s for 25,000 markers), and queries medium (100ms)
+
+
 ## Issues
 
 1. Postgres needs each database that uses vector to enable the extension.  This needs the command ```CREATE EXTENSION IF NOT EXISTS vector``` to be executed with superuser rights.
@@ -34,7 +42,7 @@ go run vector.go -db=qdrant -dsn="host=localhost port=6334 api-key=photoprism" -
 1. SqLite does note support order by distance desc
 1. Qdrant doesn't have a count that allows a distance/score.  Only filters on the payload. (Workaround is to retreive all the matches > than score)
 1. Qdrant only supports >= score for Search (score_threshold)
-
+1. Distance Equal a number is unreliable for all.  Need to use between 0 and 0.00001 for MariaDB, Postgres, and SQLite.  Use score of around 0.9999995 for Qdrant
 
 
 ```
