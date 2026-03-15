@@ -303,6 +303,7 @@ func setupQdrantDB(dsn dsn.DSN) (err error) {
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
 func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 	var db *dbms.DbConn
+	start := time.Now()
 	switch dsn.Driver {
 	case dbms.MySQL:
 		if db, err = setupGormDB(dsn.Driver, dsn.ToString()); err != nil {
@@ -435,6 +436,7 @@ func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 			log.Errorf("LoadMarkers: CreateCollection failed with %s", err)
 			return err
 		}
+
 	}
 
 	var csvFile *os.File
@@ -568,10 +570,13 @@ ProcessFileLoop:
 		return createDBMSMarkers(dsn.Driver, record, upto, &markers, &faceEmbeddings, log)
 	}
 
+	log.Infof("Load took %s", time.Since(start))
+
 	return nil
 }
 
 func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
+	start := time.Now()
 	switch dataSourceName.Driver {
 	case dsn.DriverMySQL, dsn.DriverPostgres, dsn.DriverSQLite3:
 		var db *dbms.DbConn
@@ -824,6 +829,7 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 		}
 
 	}
+	log.Infof("Query took %s", time.Since(start))
 	return
 }
 
