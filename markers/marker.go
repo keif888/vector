@@ -51,6 +51,10 @@ const (
 	CSVTimestampFormat = "2006-01-02T15:04:05.000000000Z"
 )
 
+const (
+	QueryMarkerUID = "mtbqjkz00jgjwufb"
+)
+
 // VectorMarkerFace represents the storage of face vectors
 type VectorMarkerFace struct {
 	MarkerUID   string  `gorm:"type:bytes;size:42;primaryKey;autoIncrement:false;"`
@@ -152,10 +156,17 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 		if i%1000 == 0 && i > 0 {
 			log.Infof("generateMarkers: writing %d of %d to %s", i, numberOfMarkers, fileName)
 		}
-		faceNumber := rand.IntN(numberOfFaces)
-		embedding = sourceEmbeddings[faceNumber] //nolint:gosec // test data generation crypto rand not required
+		faceNumber := rand.IntN(numberOfFaces) //nolint:gosec // test data generation crypto rand not required
+		embedding = sourceEmbeddings[faceNumber]
+		for j := range 512 {
+			embedding[j] = embedding[j] * (1 + (rand.Float64() * 2 * 0.0001) - 0.0001)
+		}
+		markerUID := GenerateUID('m')
+		if i == 0 {
+			markerUID = QueryMarkerUID
+		}
 		marker := VectorMarker{
-			MarkerUID:     GenerateUID('m'),
+			MarkerUID:     markerUID,
 			FileUID:       GenerateUID('f'),
 			MarkerType:    MarkerFace,
 			MarkerSrc:     SrcImage,
@@ -572,15 +583,16 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 		}
 		defer db.Close()
 
-		var mID string
-		if m, err := gorm.G[VectorMarker](dbms.Db()).First(context.Background()); err != nil {
-			log.Errorf("LoadMarkers: VectorMarker first failed with %s", err)
-			return err
-		} else {
-			mID = m.MarkerUID
-		}
+		// var mID string
+		// if m, err := gorm.G[VectorMarker](dbms.Db()).First(context.Background()); err != nil {
+		// 	log.Errorf("LoadMarkers: VectorMarker first failed with %s", err)
+		// 	return err
+		// } else {
+		// 	mID = m.MarkerUID
+		// }
 
-		log.Infof("MarkerUID = %s", mID)
+		// log.Infof("MarkerUID = %s", mID)
+		mID := QueryMarkerUID
 
 		var e string
 		if m, err := gorm.G[VectorMarkerFace](dbms.Db()).Where("marker_uid = ?", mID).First(context.Background()); err != nil {
@@ -593,6 +605,12 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 		var c int64
 
 		if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+			log.Errorf("LoadMarkers: count failed with %s", err)
+			return err
+		} else {
+			log.Infof("marker count = %d", c)
+		}
+		if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").LessThanOrEquals(0.93, e)).Count(context.Background(), "*"); err != nil {
 			log.Errorf("LoadMarkers: count failed with %s", err)
 			return err
 		} else {
@@ -672,18 +690,19 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 		}()
 
 		var e Embedding32
-		if result, err := dbms.QClient().Get(context.Background(), &qdrant.GetPoints{
+		if result, err := dbms.QClient().Scroll(context.Background(), &qdrant.ScrollPoints{
 			CollectionName: VectorMarker{}.TableName(),
-			Ids: []*qdrant.PointId{
-				qdrant.NewIDNum(336),
+			Filter: &qdrant.Filter{
+				Must: []*qdrant.Condition{
+					qdrant.NewMatch("UID", QueryMarkerUID),
+				},
 			},
 			WithPayload: qdrant.NewWithPayload(true),
 			WithVectors: qdrant.NewWithVectors(true),
 		}); err != nil {
-			log.Errorf("QueryMarkers: Query of Id=336 failed with %s", err)
+			log.Errorf("QueryMarkers: Query of UID=%s failed with %s", QueryMarkerUID, err)
 			return err
 		} else {
-			// log.Infof("%+v", result)
 			for _, r := range result {
 				log.Infof("MarkerUID = %s", r.Payload["UID"].GetStringValue())
 				v := r.Vectors.GetVector()
@@ -696,6 +715,31 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 				break
 			}
 		}
+
+		// if result, err := dbms.QClient().Get(context.Background(), &qdrant.GetPoints{
+		// 	CollectionName: VectorMarker{}.TableName(),
+		// 	Ids: []*qdrant.PointId{
+		// 		qdrant.NewIDNum(336),
+		// 	},
+		// 	WithPayload: qdrant.NewWithPayload(true),
+		// 	WithVectors: qdrant.NewWithVectors(true),
+		// }); err != nil {
+		// 	log.Errorf("QueryMarkers: Query of Id=336 failed with %s", err)
+		// 	return err
+		// } else {
+		// 	// log.Infof("%+v", result)
+		// 	for _, r := range result {
+		// 		log.Infof("MarkerUID = %s", r.Payload["UID"].GetStringValue())
+		// 		v := r.Vectors.GetVector()
+		// 		//v1 := v.GetMultiDense()
+		// 		//e = v1.Vectors[0].Data
+		// 		v1 := v.GetDense()
+		// 		e = v1.Data
+		// 		// log.Infof("%+v", e)
+		// 		// log.Infof("%s", e.JSON())
+		// 		break
+		// 	}
+		// }
 
 		// Count only works against named vectors or payload.
 		/*
@@ -738,8 +782,29 @@ func QueryMarkers(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 			}
 		*/
 		score := e[0]
-		score = float32(0.98)
+		score = float32(0.9999995)
 		limit := uint64(10)
+		if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+			CollectionName: VectorMarker{}.TableName(),
+			Query:          qdrant.NewQueryDense(e), // 4 results
+			// Query: qdrant.NewQueryNearest(qdrant.NewVectorInputDense(e)), // 4 results
+			// Query:          qdrant.NewQueryID(qdrant.NewIDNum(336)), // 3 results (missing 336)
+			Limit:          &limit,
+			ScoreThreshold: &score,
+			WithPayload:    qdrant.NewWithPayload(true),
+			WithVectors:    qdrant.NewWithVectors(true),
+		}); err != nil {
+			log.Errorf("QueryMarkers: Query of Id=336 failed with %s", err)
+			return err
+		} else {
+			log.Infof("Search found %d results", len(result))
+			for _, r := range result {
+				// e = r.Vectors.String()
+				log.Infof("Id = %+v, Score = %f, MarkerUID = %s", r.Id, r.Score, r.Payload["UID"].GetStringValue())
+			}
+		}
+		score = float32(0.07)
+		limit = uint64(100)
 		if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 			CollectionName: VectorMarker{}.TableName(),
 			Query:          qdrant.NewQueryDense(e), // 4 results
