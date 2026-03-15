@@ -32,6 +32,8 @@ go run vector.go -db=qdrant -dsn="host=localhost port=6334 api-key=photoprism" -
 1. MariaDB, Postgres and Qdrant don't calculate the distance between two embeds to the exact same value. It is close, but they are not the same.
 1. SQLite's cosine number bears little or no resemblance to MariaDB, Postgres or Qdrant
 1. SqLite does note support order by distance desc
+1. Qdrant doesn't have a count that allows a distance/score.  Only filters on the payload. (Workaround is to retreive all the matches > than score)
+1. Qdrant only supports >= score for Search (score_threshold)
 
 
 
