@@ -125,6 +125,8 @@ func (e DBEmbed) GormValue(ctx context.Context, db *gorm.DB) clause.Expr {
 
 type DBEmbedQueryExpression struct {
 	column              string
+	alias               string
+	distance            bool
 	equals              bool
 	lessThan            bool
 	greaterThan         bool
@@ -137,6 +139,14 @@ type DBEmbedQueryExpression struct {
 // DBEmbedQuery query column as vector
 func DBEmbedQuery(column string) *DBEmbedQueryExpression {
 	return &DBEmbedQueryExpression{column: column}
+}
+
+// Distance returns clause.Expression
+func (dbembedQuery *DBEmbedQueryExpression) Distance(embed, alias string) *DBEmbedQueryExpression {
+	dbembedQuery.distance = true
+	dbembedQuery.alias = alias
+	dbembedQuery.embedValue = embed
+	return dbembedQuery
 }
 
 // Equals returns clause.Expression
@@ -203,7 +213,12 @@ func (dbembedQuery *DBEmbedQueryExpression) Build(builder clause.Builder) {
 					case dbembedQuery.greaterThanOrEquals:
 						builder.WriteString(" >= ") //nolint:errcheck // can't return the error
 					}
-					stmt.AddVar(builder, dbembedQuery.distanceValue)
+					if dbembedQuery.distance {
+						builder.WriteString(" AS ")             //nolint:errcheck // can't return the error
+						builder.WriteString(dbembedQuery.alias) //nolint:errcheck // can't return the error
+					} else {
+						stmt.AddVar(builder, dbembedQuery.distanceValue)
+					}
 				}
 			} else {
 				builder.WriteString("DISTANCE(") //nolint:errcheck // can't return the error
@@ -211,20 +226,25 @@ func (dbembedQuery *DBEmbedQueryExpression) Build(builder clause.Builder) {
 				builder.WriteString(", STRING_TO_VECTOR(") //nolint:errcheck // can't return the error
 				builder.AddVar(stmt, dbembedQuery.embedValue)
 				builder.WriteString("), ") //nolint:errcheck // can't return the error
-				builder.AddVar(stmt, "COSINE")
+				builder.AddVar(stmt, "COSINE)")
 				switch {
 				case dbembedQuery.equals:
-					builder.WriteString(") = ") //nolint:errcheck // can't return the error
+					builder.WriteString(" = ") //nolint:errcheck // can't return the error
 				case dbembedQuery.lessThan:
-					builder.WriteString(") < ") //nolint:errcheck // can't return the error
+					builder.WriteString(" < ") //nolint:errcheck // can't return the error
 				case dbembedQuery.greaterThan:
-					builder.WriteString(") > ") //nolint:errcheck // can't return the error
+					builder.WriteString(" > ") //nolint:errcheck // can't return the error
 				case dbembedQuery.lessThanOrEquals:
-					builder.WriteString(") <= ") //nolint:errcheck // can't return the error
+					builder.WriteString(" <= ") //nolint:errcheck // can't return the error
 				case dbembedQuery.greaterThanOrEquals:
-					builder.WriteString(") >= ") //nolint:errcheck // can't return the error
+					builder.WriteString(" >= ") //nolint:errcheck // can't return the error
 				}
-				stmt.AddVar(builder, dbembedQuery.distanceValue)
+				if dbembedQuery.distance {
+					builder.WriteString(" AS ")             //nolint:errcheck // can't return the error
+					builder.WriteString(dbembedQuery.alias) //nolint:errcheck // can't return the error
+				} else {
+					stmt.AddVar(builder, dbembedQuery.distanceValue)
+				}
 			}
 		case "postgres":
 			builder.WriteQuoted(dbembedQuery.column)
@@ -242,26 +262,40 @@ func (dbembedQuery *DBEmbedQueryExpression) Build(builder clause.Builder) {
 			case dbembedQuery.greaterThanOrEquals:
 				builder.WriteString(" >= ") //nolint:errcheck // can't return the error
 			}
-			stmt.AddVar(builder, dbembedQuery.distanceValue)
-		case "sqlite":
-			builder.WriteQuoted(dbembedQuery.column)
-			builder.WriteString(" match ") //nolint:errcheck // can't return the error
-			builder.AddVar(stmt, dbembedQuery.embedValue)
-			// k = 5 is the equivalent of limit = 5
-			builder.WriteString(" AND k = 5 AND distance ") //nolint:errcheck // can't return the error
-			switch {
-			case dbembedQuery.equals:
-				builder.WriteString(" = ") //nolint:errcheck // can't return the error
-			case dbembedQuery.lessThan:
-				builder.WriteString(" < ") //nolint:errcheck // can't return the error
-			case dbembedQuery.greaterThan:
-				builder.WriteString(" > ") //nolint:errcheck // can't return the error
-			case dbembedQuery.lessThanOrEquals:
-				builder.WriteString(" <= ") //nolint:errcheck // can't return the error
-			case dbembedQuery.greaterThanOrEquals:
-				builder.WriteString(" >= ") //nolint:errcheck // can't return the error
+			if dbembedQuery.distance {
+				builder.WriteString(" AS ")             //nolint:errcheck // can't return the error
+				builder.WriteString(dbembedQuery.alias) //nolint:errcheck // can't return the error
+			} else {
+				stmt.AddVar(builder, dbembedQuery.distanceValue)
 			}
-			stmt.AddVar(builder, dbembedQuery.distanceValue)
+		case "sqlite":
+			if dbembedQuery.distance {
+				// This will only work if you are lucky, and also have an equals, etc. in the query.
+				builder.WriteString(" distance ") //nolint:errcheck // can't return the error
+			} else {
+				// sqlite-vec has some ugly limitations.
+				// Must include a limit or a k = statement.
+				// But, can't have a limit if using a join.
+				// k = crops the results before doing the join, so if the row you want is k + 1, to bad.
+				builder.WriteQuoted(dbembedQuery.column)
+				builder.WriteString(" match ") //nolint:errcheck // can't return the error
+				builder.AddVar(stmt, dbembedQuery.embedValue)
+				// k = 5 is the equivalent of limit = 5
+				builder.WriteString(" AND k = 50 ") //nolint:errcheck // can't return the error
+				switch {
+				case dbembedQuery.equals:
+					builder.WriteString(" AND distance = ") //nolint:errcheck // can't return the error
+				case dbembedQuery.lessThan:
+					builder.WriteString(" AND distance < ") //nolint:errcheck // can't return the error
+				case dbembedQuery.greaterThan:
+					builder.WriteString(" AND distance > ") //nolint:errcheck // can't return the error
+				case dbembedQuery.lessThanOrEquals:
+					builder.WriteString(" AND distance <= ") //nolint:errcheck // can't return the error
+				case dbembedQuery.greaterThanOrEquals:
+					builder.WriteString(" AND distance >= ") //nolint:errcheck // can't return the error
+				}
+				stmt.AddVar(builder, dbembedQuery.distanceValue)
+			}
 		}
 	}
 }
