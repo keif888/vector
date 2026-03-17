@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/keif888/vector/dbms"
@@ -98,6 +99,7 @@ type VectorMarker struct {
 	FaceID         string          `gorm:"type:bytes;size:64;index;" json:"FaceID" yaml:"FaceID,omitempty"`
 	FaceDist       float64         `gorm:"default:-1;" json:"FaceDist" yaml:"FaceDist,omitempty"`
 	EmbeddingsJSON json.RawMessage `gorm:"type:bytes;size:66666;" json:"-" yaml:"EmbeddingsJSON,omitempty"`
+	embeddings     Embeddings      `gorm:"-" yaml:"-"`
 	LandmarksJSON  json.RawMessage `gorm:"type:bytes;size:66666;" json:"-" yaml:"LandmarksJSON,omitempty"`
 	X              float32         `json:"X" yaml:"X,omitempty"`
 	Y              float32         `json:"Y" yaml:"Y,omitempty"`
@@ -117,11 +119,34 @@ func (VectorMarker) TableName() string {
 	return "vector_markers"
 }
 
+// Face represents the face of a Subject.
+type Face struct {
+	ID              string          `gorm:"type:bytes;size:64;primaryKey;autoIncrement:false;" json:"ID" yaml:"ID"`
+	FaceSrc         string          `gorm:"type:bytes;size:8;" json:"Src" yaml:"Src,omitempty"`
+	FaceKind        int             `json:"Kind" yaml:"Kind,omitempty"`
+	FaceHidden      bool            `json:"Hidden" yaml:"Hidden,omitempty"`
+	SubjUID         string          `gorm:"type:bytes;size:42;index;default:'';" json:"SubjUID" yaml:"SubjUID,omitempty"`
+	Samples         int             `json:"Samples" yaml:"Samples,omitempty"`
+	SampleRadius    float64         `json:"SampleRadius" yaml:"SampleRadius,omitempty"`
+	Collisions      int             `json:"Collisions" yaml:"Collisions,omitempty"`
+	CollisionRadius float64         `json:"CollisionRadius" yaml:"CollisionRadius,omitempty"`
+	MergeRetry      uint8           `gorm:"default:0" json:"-" yaml:"-"`
+	MergeNotes      string          `gorm:"size:255;default:'';" json:"-" yaml:"-"`
+	EmbeddingJSON   json.RawMessage `gorm:"type:bytes;size:66666;" json:"-" yaml:"EmbeddingJSON,omitempty"`
+	embedding       Embedding       `gorm:"-" yaml:"-"`
+	MatchedAt       *time.Time      `json:"MatchedAt" yaml:"MatchedAt,omitempty"`
+	CreatedAt       time.Time       `json:"CreatedAt" yaml:"CreatedAt,omitempty"`
+	UpdatedAt       time.Time       `json:"UpdatedAt" yaml:"UpdatedAt,omitempty"`
+}
+
 // Embedding represents a face embedding.
 type Embedding []float64
 
 // Embedding32 represents a face embedding in float32.
 type Embedding32 []float32
+
+// Embeddings represents a face embedding cluster.
+type Embeddings []Embedding
 
 // GenerateMarkers populates fileName with numberOfMarkers of randomly generated data
 func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (err error) {
@@ -483,6 +508,23 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation int, log *logrus.Logger)
 			return err
 		}
 
+		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: VectorMarker{}.TableName(),
+			FieldName:      "UID",
+			FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateFieldIndex UID failed with %s", err)
+			return err
+		}
+		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: VectorMarker{}.TableName(),
+			FieldName:      "FaceID",
+			FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateFieldIndex FaceID failed with %s", err)
+			return err
+		}
+
 	}
 
 	var csvFile *os.File
@@ -573,15 +615,23 @@ ProcessFileLoop:
 		} else {
 			updatedAt = uAt
 		}
+		embeddings := make(Embeddings, 1)
+		embed := make(Embedding, 512)
+		if err = json.Unmarshal([]byte(csvRecord[11]), &embed); err != nil {
+			log.Errorf("unable to unmarshal(csvRecord[11]) %s", err)
+		}
+		embeddings[0] = embed
+
 		markers[counter] = VectorMarker{
-			MarkerUID:     csvRecord[0],
-			FileUID:       csvRecord[1],
-			MarkerType:    csvRecord[2],
-			MarkerSrc:     csvRecord[3],
-			MarkerReview:  markerReview,
-			MarkerInvalid: markerInvalid,
-			SubjSrc:       csvRecord[8],
-			FaceDist:      faceDist,
+			MarkerUID:      csvRecord[0],
+			FileUID:        csvRecord[1],
+			MarkerType:     csvRecord[2],
+			MarkerSrc:      csvRecord[3],
+			MarkerReview:   markerReview,
+			MarkerInvalid:  markerInvalid,
+			SubjSrc:        csvRecord[8],
+			FaceDist:       faceDist,
+			EmbeddingsJSON: embeddings.JSON(),
 			// Embedding:     DBEmbed{Embed: embedding},
 			X:         x,
 			Y:         y,
@@ -872,7 +922,7 @@ func QueryMarkers(dataSourceName dsn.DSN, markerUID string, equation int, log *l
 }
 
 // QueryMatchMarkers aims to simulate the face.MatchMarkers with an empty faces id.
-func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, log *logrus.Logger) (err error) {
+func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, bruteForce bool, log *logrus.Logger) (err error) {
 	if equation != int(Distance_Euclidean) && equation != int(Distance_Cosine) {
 		return fmt.Errorf("equation %d was not valid", equation)
 	}
@@ -968,46 +1018,78 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, l
 				// Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
 				Rows(context.Background()); err != nil {
 		*/
-		if rows, err := dbms.Db().
-			Model(&VectorMarker{}).
-			Where("vector_markers.marker_uid <> ?", markerUID).
-			Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
-			Where(DBEmbedQuery("embedding").
-				LessThanOrEquals(DistanceEquation(equation), MatchDist+ClusterRadius, faceEmbedding),
-			).
-			Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
-			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(DistanceEquation(equation), faceEmbedding, "distance")).
-			Order("distance").
-			Rows(); err != nil {
-			log.Errorf("QueryMatch: Select failed with %s", err)
-			return err
+		if bruteForce {
+			var markers []VectorMarker
+			markers, err := gorm.G[VectorMarker](dbms.Db()).Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).Find(context.Background())
+
+			if err != nil {
+				log.Debugf("faces: failed fetching markers matching face id %s (%s)", strings.Join(Faceless, ", "), err)
+				return err
+			}
+
+			resultLen := len(markers)
+			embed := make(Embedding, 512)
+			if err = json.Unmarshal([]byte(faceEmbedding), &embed); err != nil {
+				log.Errorf("unable to unmarshal(e) %s", err)
+			}
+			f := Face{EmbeddingJSON: json.RawMessage(embed.JSON())}
+			startl := time.Now()
+			for i, marker := range markers {
+				if time.Since(startl) > time.Duration(time.Minute*15) {
+					log.Infof("faces: matching %d of %d markers", i, resultLen)
+					startl = time.Now()
+				}
+				if ok, dist := f.Match(marker.Embeddings()); !ok {
+					// Ignore.
+					//} else if _, err = marker.SetFace(m, dist); err != nil {
+					//					return err
+				} else {
+					log.Infof("Distance was %f for MarkerUID %s", dist, marker.MarkerUID)
+				}
+			}
+
 		} else {
-			for rows.Next() {
-				if err = rows.Scan(&dist, &m); err != nil {
-					log.Errorf("QueryMatch: Rows.Scan failed with %s", err)
+			if rows, err := dbms.Db().
+				Model(&VectorMarker{}).
+				Where("vector_markers.marker_uid <> ?", markerUID).
+				Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
+				Where(DBEmbedQuery("embedding").
+					LessThanOrEquals(DistanceEquation(equation), MatchDist+ClusterRadius, faceEmbedding),
+				).
+				Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
+				Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(DistanceEquation(equation), faceEmbedding, "distance")).
+				Order("distance").
+				Rows(); err != nil {
+				log.Errorf("QueryMatch: Select failed with %s", err)
+				return err
+			} else {
+				for rows.Next() {
+					if err = rows.Scan(&dist, &m); err != nil {
+						log.Errorf("QueryMatch: Rows.Scan failed with %s", err)
+						return err
+					}
+					switch {
+					case dist < 0:
+						// Should never happen.
+						log.Warnf("Distance %f was less than 0.", dist)
+					case dist > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
+						// Too far.
+						log.Infof("Distance %f was greater than allowed.", dist)
+					// case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
+					// Dont' have a face to be able to do this test.
+					// Within radius of reported collisions.
+					// return false, dist
+					default:
+						log.Infof("Distance was %f for MarkerUID %s", dist, m)
+						// Get the marker by UID
+						// marker.SetFace()
+					}
+
+				}
+				if err = rows.Close(); err != nil {
+					log.Errorf("QueryMatch: Rows.Close failed with %s", err)
 					return err
 				}
-				switch {
-				case dist < 0:
-					// Should never happen.
-					log.Warnf("Distance %f was less than 0.", dist)
-				case dist > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
-					// Too far.
-					log.Infof("Distance %f was greater than allowed.", dist)
-				// case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
-				// Dont' have a face to be able to do this test.
-				// Within radius of reported collisions.
-				// return false, dist
-				default:
-					log.Infof("Distance was %f for MarkerUID %s", dist, m)
-					// Get the marker by UID
-					// marker.SetFace()
-				}
-
-			}
-			if err = rows.Close(); err != nil {
-				log.Errorf("QueryMatch: Rows.Close failed with %s", err)
-				return err
 			}
 		}
 
@@ -1034,46 +1116,79 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, l
 			return nil
 		}
 
-		// MatchDist + ClusterRadius is the worst case scenario for a face (m.SampleRadius + face.MatchDist).
-		// Use that as a 1st pass cleanser, then apply the switch clause
+		if bruteForce {
+			var markers []VectorMarker
+			markers, err := gorm.G[VectorMarker](dbms.Db()).Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).Find(context.Background())
 
-		// DistResult is used to capture the result from the distance query
-		type DistResult struct {
-			Distance  float64
-			MarkerUID string
-		}
+			if err != nil {
+				log.Debugf("faces: failed fetching markers matching face id %s (%s)", strings.Join(Faceless, ", "), err)
+				return err
+			}
 
-		var distResults []DistResult
-		if result := dbms.Db().
-			Model(&VectorMarker{}).
-			Where("vector_markers.marker_uid <> ?", markerUID).
-			Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
-			Where(DBEmbedQuery("embedding").
-				LessThanOrEquals(DistanceEquation(equation), MatchDist+ClusterRadius, faceEmbedding),
-			).
-			Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
-			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(DistanceEquation(equation), faceEmbedding, "distance")).
-			Order("distance").
-			Find(&distResults); result.Error != nil {
-			log.Errorf("QueryMatchMarkers: Select failed with %s", result.Error)
-			return result.Error
+			resultLen := len(markers)
+			embed := make(Embedding, 512)
+			if err = json.Unmarshal([]byte(faceEmbedding), &embed); err != nil {
+				log.Errorf("unable to unmarshal(e) %s", err)
+			}
+			f := Face{EmbeddingJSON: json.RawMessage(embed.JSON())}
+			startl := time.Now()
+			for i, marker := range markers {
+				if time.Since(startl) > time.Duration(time.Minute*15) {
+					log.Infof("faces: matching %d of %d markers", i, resultLen)
+					startl = time.Now()
+				}
+				if ok, dist := f.Match(marker.Embeddings()); !ok {
+					// Ignore.
+					//} else if _, err = marker.SetFace(m, dist); err != nil {
+					//					return err
+				} else {
+					log.Infof("Distance was %f for MarkerUID %s", dist, marker.MarkerUID)
+				}
+			}
+
 		} else {
-			for _, r := range distResults {
-				switch {
-				case r.Distance < 0:
-					// Should never happen.
-					log.Warnf("Distance %f was less than 0.", r.Distance)
-				case r.Distance > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
-					// Too far.
-					log.Infof("Distance %f was greater than allowed.", r.Distance)
-				// case m.CollisionRadius > CollisionDist && r.Distance > m.CollisionRadius:
-				// Dont' have a face to be able to do this test.
-				// Within radius of reported collisions.
-				// return false, r.Distance
-				default:
-					log.Infof("Distance was %f for MarkerUID %s", r.Distance, r.MarkerUID)
-					// Get the marker by UID
-					// marker.SetFace()
+
+			// MatchDist + ClusterRadius is the worst case scenario for a face (m.SampleRadius + face.MatchDist).
+			// Use that as a 1st pass cleanser, then apply the switch clause
+
+			// DistResult is used to capture the result from the distance query
+			type DistResult struct {
+				Distance  float64
+				MarkerUID string
+			}
+
+			var distResults []DistResult
+			if result := dbms.Db().
+				Model(&VectorMarker{}).
+				Where("vector_markers.marker_uid <> ?", markerUID).
+				Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
+				Where(DBEmbedQuery("embedding").
+					LessThanOrEquals(DistanceEquation(equation), MatchDist+ClusterRadius, faceEmbedding),
+				).
+				Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
+				Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(DistanceEquation(equation), faceEmbedding, "distance")).
+				Order("distance").
+				Find(&distResults); result.Error != nil {
+				log.Errorf("QueryMatchMarkers: Select failed with %s", result.Error)
+				return result.Error
+			} else {
+				for _, r := range distResults {
+					switch {
+					case r.Distance < 0:
+						// Should never happen.
+						log.Warnf("Distance %f was less than 0.", r.Distance)
+					case r.Distance > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
+						// Too far.
+						log.Infof("Distance %f was greater than allowed.", r.Distance)
+					// case m.CollisionRadius > CollisionDist && r.Distance > m.CollisionRadius:
+					// Dont' have a face to be able to do this test.
+					// Within radius of reported collisions.
+					// return false, r.Distance
+					default:
+						log.Infof("Distance was %f for MarkerUID %s", r.Distance, r.MarkerUID)
+						// Get the marker by UID
+						// marker.SetFace()
+					}
 				}
 			}
 		}
@@ -1307,6 +1422,21 @@ func (e Embedding32) JSON() string {
 	}
 }
 
+// JSON returns the embeddings as JSON-encoded bytes.
+func (embeddings Embeddings) JSON() []byte {
+	var noResult = []byte("")
+
+	if embeddings.Empty() {
+		return noResult
+	}
+
+	if result, err := json.Marshal(embeddings); err != nil {
+		return noResult
+	} else {
+		return result
+	}
+}
+
 // MariaDBEmbedding encodes an Embedding in the native MariaDB format (set of IEEE 754 floating point numbers)
 func MariaDBEmbedding(values Embedding) (result []byte) {
 	result = make([]byte, len(values)*4)
@@ -1315,4 +1445,105 @@ func MariaDBEmbedding(values Embedding) (result []byte) {
 		binary.LittleEndian.PutUint32(result[i*4:], words)
 	}
 	return
+}
+
+// Embeddings returns parsed marker embeddings.
+func (m *VectorMarker) Embeddings() Embeddings {
+	if len(m.EmbeddingsJSON) == 0 {
+		return Embeddings{}
+	} else if len(m.embeddings) > 0 {
+		return m.embeddings
+	} else if err := json.Unmarshal(m.EmbeddingsJSON, &m.embeddings); err != nil {
+		log.Errorf("markers: %s while parsing embeddings json", err)
+	}
+
+	return m.embeddings
+}
+
+// Embedding returns parsed face embedding.
+func (m *Face) Embedding() Embedding {
+	if len(m.EmbeddingJSON) == 0 {
+		return Embedding{}
+	} else if len(m.embedding) > 0 {
+		return m.embedding
+	} else if err := json.Unmarshal(m.EmbeddingJSON, &m.embedding); err != nil {
+		log.Errorf("failed parsing face embedding json: %s", err)
+	}
+
+	return m.embedding
+}
+
+// Match tests if embeddings match this face.
+func (m *Face) Match(embeddings Embeddings) (match bool, dist float64) {
+	dist = -1
+
+	if embeddings.Empty() {
+		// Np embeddings, no match.
+		return false, dist
+	}
+
+	faceEmbedding := m.Embedding()
+
+	if len(faceEmbedding) == 0 {
+		// Should never happen.
+		return false, dist
+	}
+
+	// Calculate the smallest distance to embeddings.
+	for _, e := range embeddings {
+		if d := e.Dist(faceEmbedding); d < dist || dist < 0 {
+			dist = d
+		}
+	}
+
+	// Any reasons embeddings do not match this face?
+	switch {
+	case dist < 0:
+		// Should never happen.
+		return false, dist
+	case dist > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
+		//	case dist > (m.SampleRadius + MatchDist):
+		// Too far.
+		return false, dist
+		//	case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
+		// Within radius of reported collisions.
+		//		return false, dist
+	}
+
+	// If not, at least one of the embeddings match!
+	return true, dist
+}
+
+// Empty tests if embeddings are empty.
+func (embeddings Embeddings) Empty() bool {
+	if len(embeddings) < 1 {
+		return true
+	}
+
+	return len(embeddings[0]) < 1
+}
+
+// Count returns the number of embeddings.
+func (embeddings Embeddings) Count() int {
+	if embeddings.Empty() {
+		return 0
+	}
+
+	return len(embeddings)
+}
+
+// Dist calculates the distance to another face embedding.
+func (m Embedding) Dist(other Embedding) float64 {
+	if len(other) == 0 || len(m) != len(other) {
+		return -1
+	}
+
+	var sum float64
+
+	for i, value := range m {
+		diff := value - other[i]
+		sum += diff * diff
+	}
+
+	return math.Sqrt(sum)
 }
