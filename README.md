@@ -2,6 +2,29 @@ This repository is a spike to test vector database connectivity and capability f
 It's very much not a production ready set of code!  
 Use it at your own risk, no guarantee of functionality is provided.  
 
+## Command Line
+
+```
+go run vector.go  
+  -action string  
+    	Take one of the following actions gencsv, loadcsv, cluster, query, match (default "gencsv")  
+  -db string  
+    	driver to use.  Choose from sqlite, mysql, postgres and qdrant (default "sqlite")  
+  -dsn string  
+    	DSN to access the database (default "testdb.db")  
+  -filename string  
+    	The name of the CSV file to generate or load  
+  -makecsv  
+    	Create a CSV file for   
+  -markers int  
+    	Number of markers to generate (default 100)  
+  -overwrite  
+    	Overwrite the csv file?  
+  -uid string  
+    	MarkerUID to use as the face to match against (default "mtbqjkz00jgjwufb")  
+```
+
+
 ## Development Commands
 
 ```
@@ -24,6 +47,8 @@ go run vector.go -db=qdrant -dsn="host=localhost port=6334 api-key=photoprism" -
 
 ## Notes
 
+action=query is similar to the worst case MatchMarkers against blank faces, in that it gets all of the faces under a threshold.
+
 1. SQLite loads fast (10s for 25,000 markers), and queries slowest (199ms)
 1. MariaDB loads slowest (66s for 25,000 markers), and queries fastest (57ms)
 1. Postgres loads slow (50s for 25,000 markers), and queries slow (195ms)
@@ -38,11 +63,13 @@ go run vector.go -db=qdrant -dsn="host=localhost port=6334 api-key=photoprism" -
 1. sqlite-vec does not support blob or primary key in a virtual table.
 1. Qdrant doesn't return a "distance" via cosine that is like MariaDB, Postgres or SQLite.  Qdrant returns -1 to 1, where 1 is really close, and -1 is a LONG way away.  MariaDB and co all return 0 as close, and other values are further away.  Please note that the Qdrant result can be converted to the MariaDB or Postgres number, by subracting it from 1.0  ie. (1.0 - Qdrant score).
 1. MariaDB, Postgres and Qdrant don't calculate the distance between two embeds to the exact same value. It is close, but they are not the same.
-1. SQLite's cosine number bears little or no resemblance to MariaDB, Postgres or Qdrant
-1. SqLite does note support order by distance desc
+1. SQLite's cosine number bears little to no resemblance to MariaDB, Postgres or Qdrant
+1. SqLite does not support order by distance desc
 1. Qdrant doesn't have a count that allows a distance/score.  Only filters on the payload. (Workaround is to retreive all the matches > than score)
 1. Qdrant only supports >= score for Search (score_threshold)
 1. Distance Equal a number is unreliable for all.  Need to use between 0 and 0.00001 for MariaDB, Postgres, and SQLite.  Use score of around 0.9999995 for Qdrant
+1. SQLite-vec does not support k=50 and LIMIT 1 if there is not a join in the query.
+
 
 
 ```
