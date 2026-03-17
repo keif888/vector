@@ -36,6 +36,7 @@ func main() {
 		driver          string
 		dsnString       string
 		markerUID       string
+		equation        int
 	)
 
 	log = logrus.New()
@@ -55,7 +56,12 @@ func main() {
 	flag.StringVar(&driver, "db", "sqlite", "driver to use.  Choose from sqlite, mysql, postgres and qdrant")
 	flag.StringVar(&dsnString, "dsn", "testdb.db", "DSN to access the database")
 	flag.StringVar(&markerUID, "uid", markers.QueryMarkerUID, "MarkerUID to use as the face to match against")
+	flag.IntVar(&equation, "equation", 1, "0 for cosine, 1 for eculidean")
 	flag.Parse()
+
+	if equation < 0 && equation > 1 {
+		flagErrorAndExit("equation %d not valid", equation)
+	}
 
 	action = strings.ToLower(action)
 	switch action {
@@ -92,7 +98,7 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
-		if err := markers.LoadMarkers(fileName, d, log); err != nil {
+		if err := markers.LoadMarkers(fileName, d, equation, log); err != nil {
 			flagErrorAndExit("Generation failed with %s", err)
 		}
 	case "cluster":
@@ -117,7 +123,7 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
-		if err := markers.QueryMarkers(d, markerUID, log); err != nil {
+		if err := markers.QueryMarkers(d, markerUID, equation, log); err != nil {
 			flagErrorAndExit("Query failed with %s", err)
 		}
 	case "match":
@@ -131,7 +137,7 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
-		if err := markers.QueryMatchMarkers(d, markerUID, log); err != nil {
+		if err := markers.QueryMatchMarkers(d, markerUID, equation, log); err != nil {
 			flagErrorAndExit("QueryMatch failed with %s", err)
 		}
 	default:

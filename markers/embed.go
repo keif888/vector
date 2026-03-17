@@ -15,6 +15,13 @@ import (
 	"gorm.io/gorm/schema"
 )
 
+type DistanceEquation int
+
+const (
+	Distance_Cosine DistanceEquation = iota
+	Distance_Euclidean
+)
+
 var log *logrus.Logger
 
 func SetLog(logger *logrus.Logger) {
@@ -134,6 +141,7 @@ type DBEmbedQueryExpression struct {
 	greaterThanOrEquals bool
 	distanceValue       float64
 	embedValue          string
+	equation            DistanceEquation
 }
 
 // DBEmbedQuery query column as vector
@@ -142,50 +150,56 @@ func DBEmbedQuery(column string) *DBEmbedQueryExpression {
 }
 
 // Distance returns clause.Expression
-func (dbembedQuery *DBEmbedQueryExpression) Distance(embed, alias string) *DBEmbedQueryExpression {
+func (dbembedQuery *DBEmbedQueryExpression) Distance(equation DistanceEquation, embed, alias string) *DBEmbedQueryExpression {
 	dbembedQuery.distance = true
 	dbembedQuery.alias = alias
 	dbembedQuery.embedValue = embed
+	dbembedQuery.equation = equation
 	return dbembedQuery
 }
 
 // Equals returns clause.Expression
-func (dbembedQuery *DBEmbedQueryExpression) Equals(distance float64, embed string) *DBEmbedQueryExpression {
+func (dbembedQuery *DBEmbedQueryExpression) Equals(equation DistanceEquation, distance float64, embed string) *DBEmbedQueryExpression {
 	dbembedQuery.equals = true
 	dbembedQuery.distanceValue = distance
 	dbembedQuery.embedValue = embed
+	dbembedQuery.equation = equation
 	return dbembedQuery
 }
 
 // LessThan returns clause.Expression
-func (dbembedQuery *DBEmbedQueryExpression) LessThan(distance float64, embed string) *DBEmbedQueryExpression {
+func (dbembedQuery *DBEmbedQueryExpression) LessThan(equation DistanceEquation, distance float64, embed string) *DBEmbedQueryExpression {
 	dbembedQuery.lessThan = true
 	dbembedQuery.distanceValue = distance
 	dbembedQuery.embedValue = embed
+	dbembedQuery.equation = equation
 	return dbembedQuery
 }
 
 // GreaterThan returns clause.Expression
-func (dbembedQuery *DBEmbedQueryExpression) GreaterThan(distance float64, embed string) *DBEmbedQueryExpression {
+func (dbembedQuery *DBEmbedQueryExpression) GreaterThan(equation DistanceEquation, distance float64, embed string) *DBEmbedQueryExpression {
 	dbembedQuery.greaterThan = true
 	dbembedQuery.distanceValue = distance
 	dbembedQuery.embedValue = embed
+	dbembedQuery.equation = equation
 	return dbembedQuery
 }
 
 // LessThanOrEquals returns clause.Expression
-func (dbembedQuery *DBEmbedQueryExpression) LessThanOrEquals(distance float64, embed string) *DBEmbedQueryExpression {
+func (dbembedQuery *DBEmbedQueryExpression) LessThanOrEquals(equation DistanceEquation, distance float64, embed string) *DBEmbedQueryExpression {
 	dbembedQuery.lessThanOrEquals = true
 	dbembedQuery.distanceValue = distance
 	dbembedQuery.embedValue = embed
+	dbembedQuery.equation = equation
 	return dbembedQuery
 }
 
 // GreaterThanOrEquals returns clause.Expression
-func (dbembedQuery *DBEmbedQueryExpression) GreaterThanOrEquals(distance float64, embed string) *DBEmbedQueryExpression {
+func (dbembedQuery *DBEmbedQueryExpression) GreaterThanOrEquals(equation DistanceEquation, distance float64, embed string) *DBEmbedQueryExpression {
 	dbembedQuery.greaterThanOrEquals = true
 	dbembedQuery.distanceValue = distance
 	dbembedQuery.embedValue = embed
+	dbembedQuery.equation = equation
 	return dbembedQuery
 }
 
@@ -196,7 +210,11 @@ func (dbembedQuery *DBEmbedQueryExpression) Build(builder clause.Builder) {
 		case "mysql":
 			if v, ok := stmt.Dialector.(*mysql.Dialector); ok {
 				if strings.Contains(v.ServerVersion, "MariaDB") {
-					builder.WriteString("VEC_DISTANCE(") //nolint:errcheck // can't return the error
+					if dbembedQuery.equation == Distance_Cosine {
+						builder.WriteString("VEC_DISTANCE_COSINE(") //nolint:errcheck // can't return the error
+					} else {
+						builder.WriteString("VEC_DISTANCE_EUCLIDEAN(") //nolint:errcheck // can't return the error
+					}
 					builder.WriteQuoted(dbembedQuery.column)
 					builder.WriteString(", VEC_FromText(") //nolint:errcheck // can't return the error
 					builder.AddVar(stmt, dbembedQuery.embedValue)
@@ -226,7 +244,12 @@ func (dbembedQuery *DBEmbedQueryExpression) Build(builder clause.Builder) {
 				builder.WriteString(", STRING_TO_VECTOR(") //nolint:errcheck // can't return the error
 				builder.AddVar(stmt, dbembedQuery.embedValue)
 				builder.WriteString("), ") //nolint:errcheck // can't return the error
-				builder.AddVar(stmt, "COSINE)")
+				if dbembedQuery.equation == Distance_Cosine {
+					builder.AddVar(stmt, "COSINE)")
+				} else {
+					builder.AddVar(stmt, "EUCLIDEAN)")
+				}
+
 				switch {
 				case dbembedQuery.equals:
 					builder.WriteString(" = ") //nolint:errcheck // can't return the error
@@ -248,7 +271,11 @@ func (dbembedQuery *DBEmbedQueryExpression) Build(builder clause.Builder) {
 			}
 		case "postgres":
 			builder.WriteQuoted(dbembedQuery.column)
-			builder.WriteString(" <=> ") //nolint:errcheck // can't return the error
+			if dbembedQuery.equation == Distance_Cosine {
+				builder.WriteString(" <=> ") //nolint:errcheck // can't return the error
+			} else {
+				builder.WriteString(" <-> ") //nolint:errcheck // can't return the error
+			}
 			builder.AddVar(stmt, dbembedQuery.embedValue)
 			switch {
 			case dbembedQuery.equals:
@@ -270,8 +297,33 @@ func (dbembedQuery *DBEmbedQueryExpression) Build(builder clause.Builder) {
 			}
 		case "sqlite":
 			if dbembedQuery.distance {
-				// This will only work if you are lucky, and also have an equals, etc. in the query.
-				builder.WriteString(" distance ") //nolint:errcheck // can't return the error
+				if dbembedQuery.equation == Distance_Cosine {
+					builder.WriteString("vec_distance_cosine(") //nolint:errcheck // can't return the error
+				} else {
+					builder.WriteString("vec_distance_L2(") //nolint:errcheck // can't return the error
+				}
+				builder.WriteQuoted(dbembedQuery.column)
+				builder.WriteString(", ") //nolint:errcheck // can't return the error
+				builder.AddVar(stmt, dbembedQuery.embedValue)
+				builder.WriteString(")") //nolint:errcheck // can't return the error
+				switch {
+				case dbembedQuery.equals:
+					builder.WriteString(" = ") //nolint:errcheck // can't return the error
+				case dbembedQuery.lessThan:
+					builder.WriteString(" < ") //nolint:errcheck // can't return the error
+				case dbembedQuery.greaterThan:
+					builder.WriteString(" > ") //nolint:errcheck // can't return the error
+				case dbembedQuery.lessThanOrEquals:
+					builder.WriteString(" <= ") //nolint:errcheck // can't return the error
+				case dbembedQuery.greaterThanOrEquals:
+					builder.WriteString(" >= ") //nolint:errcheck // can't return the error
+				}
+				if dbembedQuery.distance {
+					builder.WriteString(" AS ")             //nolint:errcheck // can't return the error
+					builder.WriteString(dbembedQuery.alias) //nolint:errcheck // can't return the error
+				} else {
+					stmt.AddVar(builder, dbembedQuery.distanceValue)
+				}
 			} else {
 				// sqlite-vec has some ugly limitations.
 				// Must include a limit or a k = statement.

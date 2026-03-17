@@ -318,7 +318,7 @@ func setupQdrantDB(dsn dsn.DSN) (err error) {
 }
 
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
-func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
+func LoadMarkers(fileName string, dsn dsn.DSN, equation int, log *logrus.Logger) (err error) {
 	var db *dbms.DbConn
 	start := time.Now()
 	switch dsn.Driver {
@@ -333,9 +333,18 @@ func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
 			return err
 		}
-		if err = dbms.Db().Exec("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=8 DISTANCE=cosine").Error; err != nil {
-			log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
-			return err
+		if DistanceEquation(equation) == Distance_Cosine {
+			if err = dbms.Db().Exec("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=8 DISTANCE=cosine").Error; err != nil {
+				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
+				return err
+			}
+		} else if DistanceEquation(equation) == Distance_Euclidean {
+			if err = dbms.Db().Exec("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=8 DISTANCE=euclidean").Error; err != nil {
+				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
+				return err
+			}
+		} else {
+			return fmt.Errorf("equation %d was not valid", equation)
 		}
 		// What does this do to the tables?
 		if err = migrateVectorMarkers(); err != nil {
@@ -388,10 +397,21 @@ func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
 			return err
 		}
-		if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_cosine_ops) WITH (m=8)").Error; err != nil {
-			log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
-			return err
+
+		if DistanceEquation(equation) == Distance_Cosine {
+			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_cosine_ops) WITH (m=8)").Error; err != nil {
+				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
+				return err
+			}
+		} else if DistanceEquation(equation) == Distance_Euclidean {
+			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_l2_ops) WITH (m=8)").Error; err != nil {
+				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
+				return err
+			}
+		} else {
+			return fmt.Errorf("equation %d was not valid", equation)
 		}
+
 		// Does this drop the index?
 		if err = migrateVectorMarkers(); err != nil {
 			log.Errorf("LoadMarkers: migration of vector_markers failed with %s", err)
@@ -437,13 +457,22 @@ func LoadMarkers(fileName string, dsn dsn.DSN, log *logrus.Logger) (err error) {
 			}
 		}()
 
+		var distance qdrant.Distance
+		if DistanceEquation(equation) == Distance_Cosine {
+			distance = qdrant.Distance_Cosine
+		} else if DistanceEquation(equation) == Distance_Euclidean {
+			distance = qdrant.Distance_Euclid
+		} else {
+			return fmt.Errorf("equation %d was not valid", equation)
+		}
+
 		if err = dbms.QClient().CreateCollection(context.Background(), &qdrant.CreateCollection{
 			CollectionName: VectorMarker{}.TableName(),
 			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
 				Size: 512,
 				// Distance: qdrant.Distance_Cosine,
 				// Datatype: qdrant.Datatype_Float32.Enum(),
-				Distance: qdrant.Distance_Cosine,
+				Distance: distance,
 				Datatype: qdrant.Datatype_Default.Enum(),
 				// MultivectorConfig: &qdrant.MultiVectorConfig{
 				// 	Comparator: qdrant.MultiVectorComparator_MaxSim,
@@ -592,7 +621,10 @@ ProcessFileLoop:
 	return nil
 }
 
-func QueryMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (err error) {
+func QueryMarkers(dataSourceName dsn.DSN, markerUID string, equation int, log *logrus.Logger) (err error) {
+	if equation != int(Distance_Euclidean) && equation != int(Distance_Cosine) {
+		return fmt.Errorf("equation %d was not valid", equation)
+	}
 	start := time.Now()
 	switch dataSourceName.Driver {
 	case dsn.DriverMySQL, dsn.DriverPostgres, dsn.DriverSQLite3:
@@ -615,13 +647,13 @@ func QueryMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) 
 
 		var c int64
 
-		if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(0.0, e)).Count(context.Background(), "*"); err != nil {
+		if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").Equals(DistanceEquation(equation), 0.0, e)).Count(context.Background(), "*"); err != nil {
 			log.Errorf("LoadMarkers: count failed with %s", err)
 			return err
 		} else {
 			log.Infof("marker count = %d", c)
 		}
-		if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").LessThanOrEquals(0.93, e)).Count(context.Background(), "*"); err != nil {
+		if c, err = gorm.G[VectorMarkerFace](dbms.Db()).Where(DBEmbedQuery("embedding").LessThanOrEquals(DistanceEquation(equation), 0.93, e)).Count(context.Background(), "*"); err != nil {
 			log.Errorf("LoadMarkers: count failed with %s", err)
 			return err
 		} else {
@@ -840,7 +872,10 @@ func QueryMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) 
 }
 
 // QueryMatchMarkers aims to simulate the face.MatchMarkers with an empty faces id.
-func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (err error) {
+func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, log *logrus.Logger) (err error) {
+	if equation != int(Distance_Euclidean) && equation != int(Distance_Cosine) {
+		return fmt.Errorf("equation %d was not valid", equation)
+	}
 	start := time.Now()
 	switch dataSourceName.Driver {
 	case dsn.DriverSQLite3:
@@ -938,10 +973,10 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Log
 			Where("vector_markers.marker_uid <> ?", markerUID).
 			Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
 			Where(DBEmbedQuery("embedding").
-				LessThanOrEquals(MatchDist+ClusterRadius, faceEmbedding),
+				LessThanOrEquals(DistanceEquation(equation), MatchDist+ClusterRadius, faceEmbedding),
 			).
 			Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
-			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
+			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(DistanceEquation(equation), faceEmbedding, "distance")).
 			Order("distance").
 			Rows(); err != nil {
 			log.Errorf("QueryMatch: Select failed with %s", err)
@@ -1014,10 +1049,10 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Log
 			Where("vector_markers.marker_uid <> ?", markerUID).
 			Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
 			Where(DBEmbedQuery("embedding").
-				LessThanOrEquals(MatchDist+ClusterRadius, faceEmbedding),
+				LessThanOrEquals(DistanceEquation(equation), MatchDist+ClusterRadius, faceEmbedding),
 			).
 			Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
-			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
+			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(DistanceEquation(equation), faceEmbedding, "distance")).
 			Order("distance").
 			Find(&distResults); result.Error != nil {
 			log.Errorf("QueryMatchMarkers: Select failed with %s", result.Error)
@@ -1105,7 +1140,11 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Log
 				case dist < -1.00001 || dist > 1.00001:
 					// Should never happen.
 					log.Warnf("Distance %f was outside range of -1.0 to 1.0 .", dist)
-				case dist < float32(1-(MatchDist+ClusterRadius)): // (m.SampleRadius + face.MatchDist)
+				case equation == int(Distance_Euclidean) && dist > float32(MatchDist+ClusterRadius): // (m.SampleRadius + face.MatchDist)
+					// Too far.
+					log.Infof("Distance %f was greater than allowed.", dist)
+
+				case equation == int(Distance_Cosine) && dist < float32(1-(MatchDist+ClusterRadius)): // (m.SampleRadius + face.MatchDist)
 					// Too far.
 					log.Infof("Distance %f was less than allowed.", dist)
 				// case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
