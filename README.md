@@ -12,6 +12,8 @@ go run vector.go
     	driver to use.  Choose from sqlite, mysql, postgres and qdrant (default "sqlite")  
   -dsn string  
     	DSN to access the database (default "testdb.db")  
+  -equation int
+    	0 for cosine, 1 for eculidean (default 1)
   -filename string  
     	The name of the CSV file to generate or load  
   -makecsv  
@@ -54,6 +56,7 @@ action=query is similar to the worst case MatchMarkers against blank faces, in t
 1. Postgres loads slow (50s for 25,000 markers), and queries slow (195ms)
 1. Qdrant loads fastest (8s for 25,000 markers), and queries medium (100ms)
 
+Using the eculidean equation returns the same results from all products.  
 
 ## Issues
 
@@ -62,18 +65,19 @@ action=query is similar to the worst case MatchMarkers against blank faces, in t
 1. Gorm can NOT handle the table definition of the virtual table with embeddings with AutoMigrate.
 1. sqlite-vec does not support blob or primary key in a virtual table.
 1. Qdrant doesn't return a "distance" via cosine that is like MariaDB, Postgres or SQLite.  Qdrant returns -1 to 1, where 1 is really close, and -1 is a LONG way away.  MariaDB and co all return 0 as close, and other values are further away.  Please note that the Qdrant result can be converted to the MariaDB or Postgres number, by subracting it from 1.0  ie. (1.0 - Qdrant score).
-1. MariaDB, Postgres and Qdrant don't calculate the distance between two embeds to the exact same value. It is close, but they are not the same.
-1. SQLite's cosine number bears little to no resemblance to MariaDB, Postgres or Qdrant
+1. MariaDB, Postgres and Qdrant don't calculate the cosine distance between two embeds to the exact same value. It is close, but they are not the same.
+1. SQLite's distance number from "match" is a eculidean distance.
 1. SqLite does not support order by distance desc
 1. Qdrant doesn't have a count that allows a distance/score.  Only filters on the payload. (Workaround is to retreive all the matches > than score)
 1. Qdrant only supports >= score for Search (score_threshold)
-1. Distance Equal a number is unreliable for all.  Need to use between 0 and 0.00001 for MariaDB, Postgres, and SQLite.  Use score of around 0.9999995 for Qdrant
-1. SQLite-vec does not support k=50 and LIMIT 1 if there is not a join in the query.
-
+1. Cosine distance Equal a number is unreliable for all (gotta love float numbers).  Need to use between 0 and 0.00001 for MariaDB, Postgres, and SQLite.  Use score of around 0.9999995 for Qdrant
+1. SQLite-vec does not support k=50 and LIMIT 1 if there is not a join in the query. (the 50 and the 1 are just examples, no value works)
+1. Qdrant supports a single metric per collection, so you can NOT change the equation between Cosine and Euclidean on the fly.  Requires a complete reload.
+1. SQLite-vec using "match" uses the eculidean equation, and it can not be configured.
 
 
 ```
-Point distance (same data loaded into each DBMS)
+Point cosine distance (same data loaded into each DBMS)
 MariaDB
 b'mtbqjkz00jgjwufb'	0.0
 b'mtbxkctd8qb2qmtz'	8.809711848911661e-10
@@ -90,7 +94,7 @@ mtbxkct43bgqynpb	0.9255088496906709
 mtbxkct4iykk0p53	0.9381353599045968
 mtbxkctyngkfrfx5	0.93874467330661
 
-SQLite
+SQLite (these are eculidean distances)
 mtbqjkz00jgjwufb	0.0
 mtbxkctd8qb2qmtz	5.80339474254288e-05
 mtbxkct43bgqynpb	1.36052250862122
@@ -98,7 +102,7 @@ mtbxkctf1zt8xjvj	1.36052370071411
 mtbxkct4iykk0p53	1.3697737455368
 mtbxkctyngkfrfx5	1.37021815776825
 
-Qdrant
+Qdrant (1 - number below gives approximately the same value as MariaDB and Postgres)
 mtbxkctd8qb2qmtz	1.0
 mtbqjkz00jgjwufb	1.0
 mtbxkctf1zt8xjvj    0.074494
