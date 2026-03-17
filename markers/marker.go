@@ -29,6 +29,9 @@ const (
 	MarkerLabel   = "label" // MarkerType for labels (todo).
 )
 
+// Faceless can be used as argument to match unmatched face markers.
+var Faceless = []string{""}
+
 const (
 	// CharsetBase10 contains digits for base10 encoding.
 	CharsetBase10 = "0123456789"
@@ -836,7 +839,8 @@ func QueryMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) 
 	return
 }
 
-func QueryMatch(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (err error) {
+// QueryMatchMarkers aims to simulate the face.MatchMarkers with an empty faces id.
+func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (err error) {
 	start := time.Now()
 	switch dataSourceName.Driver {
 	case dsn.DriverSQLite3:
@@ -868,44 +872,108 @@ func QueryMatch(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (e
 
 		// MatchDist + ClusterRadius is the worst case scenario for a face (m.SampleRadius + face.MatchDist).
 		// Use that as a 1st pass cleanser, then apply the switch clause
-		if rows, err := gorm.G[VectorMarkerFace](dbms.Db()).
-			Table(VectorMarkerFace{}.TableName()).
+
+		/*
+				// Can't get Generics to allow these queries to work :-(
+			_, _ = gorm.G[VectorMarker](dbms.Db()).
+				//			Build(clause.From.Tables[{Table(VectorMarkerFace{}.TableName()), Table(VectorMarker{}.TableName())}]).
+				//Table(VectorMarkerFace{}.TableName()).
+				// Joins(clause.InnerJoin.Association(VectorMarkerFace{}.TableName()).As("ASASAS"), func(db gorm.JoinBuilder, joinTable clause.Table, curTable clause.Table) error {
+				// 	db.Where("?.marker_uid = ?.marker_uid", joinTable, curTable)
+				// 	return nil
+				// }).
+				Table(VectorMarker{}.TableName()).
+				//Table(VectorMarkerFace{}.TableName()).
+				Joins(clause.JoinTarget{
+					Type:        clause.InnerJoin,
+					Association: "vector_marker_faces",
+					Subquery: clause.Join{
+						Type:  clause.InnerJoin,
+						Table: clause.Table{Name: "vector_markers"},
+						ON: clause.Where{
+							Exprs: []clause.Expression{
+								clause.Eq{
+									Column: clause.Column{Table: "vector_markers", Name: "marker_uid"},
+									Value:  clause.Column{Table: "vector_marker_faces", Name: "marker_uid"},
+								},
+							},
+						},
+					} , Table: "vector_marker_faces"}, func(db gorm.JoinBuilder, joinTable clause.Table, curTable clause.Table) error {
+					db.Where("?.marker_uid = ?.marker_uid", joinTable.Name, curTable.Name)
+					return nil
+				}).
+				// Joins(clause.JoinTarget{Type: clause.InnerJoin, Association: "vector_markers", Table: "vector_markers"}, func(db gorm.JoinBuilder, joinTable clause.Table, curTable clause.Table) error {
+				// 	db.Where("?.marker_uid = ?.marker_uid", joinTable.Name, curTable.Name)
+				//	return nil
+				// }).
+				// Joins(clause.InnerJoin.Association(VectorMarker{}.TableName()), func(db gorm.JoinBuilder, joinTable clause.Table, curTable clause.Table) error {
+				// 	db.Where("?.marker_uid = ?.marker_uid", joinTable, curTable)
+				// 	return nil
+				// }).
+				// Where("marker_uid <> ?", markerUID).
+				Where("vector_markers.marker_uid = vector_marker_faces.marker_uid").
+				Rows(context.Background())
+
+			if rows, err := gorm.G[SillyType](dbms.Db()).
+				//Table(VectorMarkerFace{}.TableName()).
+				// Joins(clause.CrossJoin.Association(VectorMarker{}.TableName()), func(db gorm.JoinBuilder, joinTable clause.Table, curTable clause.Table) error {
+				// 	db.Where("?.marker_uid = ?.marker_uid", joinTable, curTable)
+				// 	return nil
+				// }).
+				// Joins(clause.CrossJoin.Association(VectorMarkerFace{}.TableName()), func(db gorm.JoinBuilder, joinTable clause.Table, curTable clause.Table) error {
+				// 	db.Where("?.marker_uid = ?.marker_uid", joinTable, curTable)
+				// 	return nil
+				// }).
+				Where("marker_uid <> ?", markerUID).
+				//Where(DBEmbedQuery("embedding").
+				//	LessThanOrEquals(MatchDist+ClusterRadius, faceEmbedding)).
+				//Joins("inner join vector_markers on vector_markers.marker_uid = vector_marker_faces.marker_uid").
+				// Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
+				// Order("distance").
+				// Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
+				Rows(context.Background()); err != nil {
+		*/
+		if rows, err := dbms.Db().
+			Model(&VectorMarker{}).
+			Where("vector_markers.marker_uid <> ?", markerUID).
+			Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
 			Where(DBEmbedQuery("embedding").
-				LessThanOrEquals(MatchDist+ClusterRadius, faceEmbedding)).
-			Where("marker_uid <> ?", markerUID).
+				LessThanOrEquals(MatchDist+ClusterRadius, faceEmbedding),
+			).
+			Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
+			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
 			Order("distance").
-			Select("?, marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
-			Rows(context.Background()); err != nil {
+			Rows(); err != nil {
 			log.Errorf("QueryMatch: Select failed with %s", err)
 			return err
 		} else {
-			if rows.Next() {
+			for rows.Next() {
 				if err = rows.Scan(&dist, &m); err != nil {
 					log.Errorf("QueryMatch: Rows.Scan failed with %s", err)
 					return err
 				}
-				if err = rows.Close(); err != nil {
-					log.Errorf("QueryMatch: Rows.Close failed with %s", err)
-					return err
+				switch {
+				case dist < 0:
+					// Should never happen.
+					log.Warnf("Distance %f was less than 0.", dist)
+				case dist > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
+					// Too far.
+					log.Infof("Distance %f was greater than allowed.", dist)
+				// case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
+				// Dont' have a face to be able to do this test.
+				// Within radius of reported collisions.
+				// return false, dist
+				default:
+					log.Infof("Distance was %f for MarkerUID %s", dist, m)
+					// Get the marker by UID
+					// marker.SetFace()
 				}
-			} else {
-				log.Warnf("No records found in Match query")
-			}
-		}
 
-		switch {
-		case dist < 0:
-			// Should never happen.
-			log.Warnf("Distance %f was less than 0.", dist)
-		case dist > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
-			// Too far.
-			log.Infof("Distance %f was greater than allowed.", dist)
-		// case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
-		// Dont' have a face to be able to do this test.
-		// Within radius of reported collisions.
-		// return false, dist
-		default:
-			log.Infof("Distance was %f for MarkerUID %s", dist, m)
+			}
+			if err = rows.Close(); err != nil {
+				log.Errorf("QueryMatch: Rows.Close failed with %s", err)
+				return err
+			}
 		}
 
 	case dsn.DriverMySQL, dsn.DriverPostgres:
@@ -931,43 +999,48 @@ func QueryMatch(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (e
 			return nil
 		}
 
-		var dist float64
-		var m string
-		dist = -1
-
 		// MatchDist + ClusterRadius is the worst case scenario for a face (m.SampleRadius + face.MatchDist).
 		// Use that as a 1st pass cleanser, then apply the switch clause
-		if row := gorm.G[VectorMarkerFace](dbms.Db()).
-			Table(VectorMarkerFace{}.TableName()).
-			Where(DBEmbedQuery("embedding").
-				LessThanOrEquals(MatchDist+ClusterRadius, faceEmbedding)).
-			Where("marker_uid <> ?", markerUID).
-			Order("distance").
-			Select("?, marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
-			Limit(1).
-			Row(context.Background()); row.Err() != nil {
-			log.Errorf("QueryMatch: Select failed with %s", row.Err())
-			return row.Err()
-		} else {
-			if err = row.Scan(&dist, &m); err != nil {
-				log.Errorf("QueryMatch: Row.Scan failed with %s", err)
-				return err
-			}
+
+		// DistResult is used to capture the result from the distance query
+		type DistResult struct {
+			Distance  float64
+			MarkerUID string
 		}
 
-		switch {
-		case dist < 0:
-			// Should never happen.
-			log.Warnf("Distance %f was less than 0.", dist)
-		case dist > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
-			// Too far.
-			log.Infof("Distance %f was greater than allowed.", dist)
-		// case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
-		// Dont' have a face to be able to do this test.
-		// Within radius of reported collisions.
-		// return false, dist
-		default:
-			log.Infof("Distance was %f for MarkerUID %s", dist, m)
+		var distResults []DistResult
+		if result := dbms.Db().
+			Model(&VectorMarker{}).
+			Where("vector_markers.marker_uid <> ?", markerUID).
+			Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
+			Where(DBEmbedQuery("embedding").
+				LessThanOrEquals(MatchDist+ClusterRadius, faceEmbedding),
+			).
+			Where("marker_invalid = FALSE AND marker_type = ? AND face_id IN (?)", MarkerFace, Faceless).
+			Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(faceEmbedding, "distance")).
+			Order("distance").
+			Find(&distResults); result.Error != nil {
+			log.Errorf("QueryMatchMarkers: Select failed with %s", result.Error)
+			return result.Error
+		} else {
+			for _, r := range distResults {
+				switch {
+				case r.Distance < 0:
+					// Should never happen.
+					log.Warnf("Distance %f was less than 0.", r.Distance)
+				case r.Distance > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
+					// Too far.
+					log.Infof("Distance %f was greater than allowed.", r.Distance)
+				// case m.CollisionRadius > CollisionDist && r.Distance > m.CollisionRadius:
+				// Dont' have a face to be able to do this test.
+				// Within radius of reported collisions.
+				// return false, r.Distance
+				default:
+					log.Infof("Distance was %f for MarkerUID %s", r.Distance, r.MarkerUID)
+					// Get the marker by UID
+					// marker.SetFace()
+				}
+			}
 		}
 
 	case dsn.DriverQdrant:
@@ -1002,27 +1075,32 @@ func QueryMatch(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (e
 		}
 
 		score := float32(1.0 - (MatchDist + ClusterRadius))
-		limit := uint64(1)
-		// Return up to 1 results, with full data
-		if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+		limit := uint64(2000000)
+		// Return up to 100000 results, with full data
+		if results, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 			CollectionName: VectorMarker{}.TableName(),
 			Query:          qdrant.NewQueryDense(e),
 			Filter: &qdrant.Filter{
 				MustNot: []*qdrant.Condition{
 					qdrant.NewMatch("UID", markerUID),
 				},
+				Must: []*qdrant.Condition{
+					qdrant.NewMatchBool("Invalid", false),
+					qdrant.NewMatch("Type", MarkerFace),
+					qdrant.NewMatchKeywords("FaceID", Faceless...),
+				},
 			},
 			Limit:          &limit,
 			ScoreThreshold: &score,
 			WithPayload:    qdrant.NewWithPayload(true),
-			WithVectors:    qdrant.NewWithVectors(true),
+			WithVectors:    qdrant.NewWithVectors(false),
 		}); err != nil {
 			log.Errorf("QueryMarkers: Query for matches failed with %s", err)
 			return err
 		} else {
-			log.Infof("Search found %d results", len(result))
-			if len(result) > 0 {
-				dist := result[0].Score
+			for _, result := range results {
+				dist := result.Score
+				m := result.Payload["UID"].GetStringValue()
 				switch {
 				case dist < -1.00001 || dist > 1.00001:
 					// Should never happen.
@@ -1035,8 +1113,9 @@ func QueryMatch(dataSourceName dsn.DSN, markerUID string, log *logrus.Logger) (e
 				// Within radius of reported collisions.
 				// return false, dist
 				default:
-					log.Infof("Distance was %f for MarkerUID %s", dist, result[0].Payload["UID"].GetStringValue())
+					log.Infof("Distance was %f for MarkerUID %s", dist, m)
 				}
+
 			}
 		}
 	}

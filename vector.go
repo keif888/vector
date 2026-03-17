@@ -131,7 +131,7 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
-		if err := markers.QueryMatch(d, markerUID, log); err != nil {
+		if err := markers.QueryMatchMarkers(d, markerUID, log); err != nil {
 			flagErrorAndExit("QueryMatch failed with %s", err)
 		}
 	default:
