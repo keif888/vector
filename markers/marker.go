@@ -343,7 +343,7 @@ func setupQdrantDB(dsn dsn.DSN) (err error) {
 }
 
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
-func LoadMarkers(fileName string, dsn dsn.DSN, equation int, log *logrus.Logger) (err error) {
+func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *logrus.Logger) (err error) {
 	var db *dbms.DbConn
 	start := time.Now()
 	switch dsn.Driver {
@@ -539,8 +539,8 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation int, log *logrus.Logger)
 	}()
 
 	csvReader := csv.NewReader(csvFile)
-	markers := make([]VectorMarker, 100)
-	faceEmbeddings := make([]VectorMarkerFace, 100)
+	markers := make([]VectorMarker, batchsize)
+	faceEmbeddings := make([]VectorMarkerFace, batchsize)
 	counter := 0
 	record := 1
 	upto := 0
@@ -651,7 +651,7 @@ ProcessFileLoop:
 		}
 		counter++
 		record++
-		if counter == 100 {
+		if counter == batchsize {
 			log.Infof("processing %d with counter %d", record, counter)
 			if err = createDBMSMarkers(dsn.Driver, record, upto, &markers, &faceEmbeddings, log); err != nil {
 				return err
@@ -1028,6 +1028,7 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, b
 			}
 
 			resultLen := len(markers)
+			log.Infof("MatchMarkers: found %d markers", resultLen)
 			embed := make(Embedding, 512)
 			if err = json.Unmarshal([]byte(faceEmbedding), &embed); err != nil {
 				log.Errorf("unable to unmarshal(e) %s", err)
@@ -1126,6 +1127,7 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, b
 			}
 
 			resultLen := len(markers)
+			log.Infof("MatchMarkers: found %d markers", resultLen)
 			embed := make(Embedding, 512)
 			if err = json.Unmarshal([]byte(faceEmbedding), &embed); err != nil {
 				log.Errorf("unable to unmarshal(e) %s", err)

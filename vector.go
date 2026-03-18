@@ -38,6 +38,7 @@ func main() {
 		markerUID       string
 		equation        int
 		bruteForce      bool
+		batchSize       int
 	)
 
 	log = logrus.New()
@@ -59,6 +60,7 @@ func main() {
 	flag.StringVar(&markerUID, "uid", markers.QueryMarkerUID, "MarkerUID to use as the face to match against")
 	flag.IntVar(&equation, "equation", 1, "0 for cosine, 1 for eculidean")
 	flag.BoolVar(&bruteForce, "current", false, "Perform the request using the current way (not vector)")
+	flag.IntVar(&batchSize, "batchsize", 1000, "The size of a batch of records loaded in loadcsv")
 	flag.Parse()
 
 	if equation < 0 && equation > 1 {
@@ -100,7 +102,7 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
-		if err := markers.LoadMarkers(fileName, d, equation, log); err != nil {
+		if err := markers.LoadMarkers(fileName, d, equation, batchSize, log); err != nil {
 			flagErrorAndExit("Generation failed with %s", err)
 		}
 	case "cluster":
