@@ -116,6 +116,9 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
+		if err := markers.ClusterNew(d, equation, bruteForce, log); err != nil {
+			flagErrorAndExit("Cluster failed with %s", err)
+		}
 	case "query":
 		if _, ok := dsn.Params[driver]; !ok {
 			flagErrorAndExit("driver %v is not valid", driver)

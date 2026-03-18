@@ -51,6 +51,10 @@ const (
 )
 
 var (
+	// ClusterScoreThreshold is the minimum score required for faces that contribute to automatic clustering.
+	ClusterScoreThreshold = 20
+	// ClusterSizeThreshold is the minimum face size, in pixels, for faces considered when forming clusters.
+	ClusterSizeThreshold = 60
 	// ClusterDist is the similarity distance threshold that defines the cluster core.
 	ClusterDist = 0.64
 	// ClusterRadius is the maximum normalized distance for cluster samples.
@@ -112,6 +116,7 @@ type VectorMarker struct {
 	MatchedAt      *time.Time      `sql:"index" json:"MatchedAt" yaml:"MatchedAt,omitempty"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	ClusteredAt    *time.Time `sql:"index" json:"ClusteredAt" yaml:"ClusteredAt,omitempty"`
 }
 
 // TableName returns the entity table name.
@@ -170,7 +175,7 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 	csvWriter := csv.NewWriter(csvFile)
 	defer csvWriter.Flush()
 
-	csvHeader := []string{"marker_uid", "file_uid", "marker_type", "marker_src", "marker_name", "marker_review", "marker_invalid", "subj_uid", "subj_src", "face_id", "face_dist", "embedding", "x", "y", "w", "h", "q", "size", "score", "thumb", "matched_at", "created_at", "updated_at"}
+	csvHeader := []string{"marker_uid", "file_uid", "marker_type", "marker_src", "marker_name", "marker_review", "marker_invalid", "subj_uid", "subj_src", "face_id", "face_dist", "embedding", "x", "y", "w", "h", "q", "size", "score", "thumb", "matched_at", "created_at", "updated_at", "clsutered_at"}
 	if err := csvWriter.Write(csvHeader); err != nil {
 		log.Errorf("generateMarkers: unable to write header to file %s with error %s", fileName, err)
 		return err
@@ -217,13 +222,13 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 			SubjSrc:       SrcAuto,
 			FaceDist:      rand.Float64(), //nolint:gosec // test data generation crypto rand not required
 			// EmbeddingsJSON: []byte(embedding.JSON()),
-			X:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			Y:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			W:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			H:         rand.Float32(), //nolint:gosec // test data generation crypto rand not required
-			Q:         rand.IntN(600), //nolint:gosec // test data generation crypto rand not required
-			Size:      rand.IntN(600), //nolint:gosec // test data generation crypto rand not required
-			Score:     rand.IntN(150), //nolint:gosec // test data generation crypto rand not required
+			X:         rand.Float32(),      //nolint:gosec // test data generation crypto rand not required
+			Y:         rand.Float32(),      //nolint:gosec // test data generation crypto rand not required
+			W:         rand.Float32(),      //nolint:gosec // test data generation crypto rand not required
+			H:         rand.Float32(),      //nolint:gosec // test data generation crypto rand not required
+			Q:         rand.IntN(600),      //nolint:gosec // test data generation crypto rand not required
+			Size:      rand.IntN(540) + 59, //nolint:gosec // test data generation crypto rand not required
+			Score:     rand.IntN(130) + 19, //nolint:gosec // test data generation crypto rand not required
 			CreatedAt: time.Now().UTC(),
 			UpdatedAt: time.Now().UTC(),
 		}
@@ -250,9 +255,10 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 			strconv.Itoa(marker.Size),
 			strconv.Itoa(marker.Score),
 			marker.Thumb,
-			"", //
+			"", // MatchedAt
 			marker.CreatedAt.Format(CSVTimestampFormat),
 			marker.UpdatedAt.Format(CSVTimestampFormat),
+			"", // ClusteredAt
 		}
 		if err := csvWriter.Write(csvRecord); err != nil {
 			log.Errorf("generateMarkers: unable to write record %d to file %s with error %s", i, fileName, err)
@@ -529,12 +535,12 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 
 	var csvFile *os.File
 	if csvFile, err = os.Open(fileName); err != nil {
-		log.Errorf("generateMarkers: unable to open required file %s with error %s", fileName, err)
+		log.Errorf("LoadMarkers: unable to open required file %s with error %s", fileName, err)
 		return err
 	}
 	defer func() {
 		if err := csvFile.Close(); err != nil {
-			log.Errorf("generateMarkers: unable to close file %s with error %s", fileName, err)
+			log.Errorf("LoadMarkers: unable to close file %s with error %s", fileName, err)
 		}
 	}()
 
@@ -560,7 +566,7 @@ ProcessFileLoop:
 		case nil:
 			// NOP
 		default:
-			log.Errorf("generateMarkers: unable to read record %d from %s with error %s", record, fileName, err)
+			log.Errorf("LoadMarkers: unable to read record %d from %s with error %s", record, fileName, err)
 			return err
 		}
 		if !headerRead {
@@ -568,49 +574,61 @@ ProcessFileLoop:
 			continue
 		}
 		if markerReview, err = strconv.ParseBool(csvRecord[5]); err != nil {
-			log.Errorf("generateMarkers: unable to to understand bool value from record %d value %s from %s with error %s", record, csvRecord[5], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand bool value from record %d value %s from %s with error %s", record, csvRecord[5], fileName, err)
 			return err
 		}
 		if markerInvalid, err = strconv.ParseBool(csvRecord[6]); err != nil {
-			log.Errorf("generateMarkers: unable to to understand bool value from record %d value %s from %s with error %s", record, csvRecord[6], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand bool value from record %d value %s from %s with error %s", record, csvRecord[6], fileName, err)
 			return err
 		}
 		if faceDist, err = strconv.ParseFloat(csvRecord[10], 64); err != nil {
-			log.Errorf("generateMarkers: unable to to understand float64 value from record %d value %s from %s with error %s", record, csvRecord[10], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand float64 value from record %d value %s from %s with error %s", record, csvRecord[10], fileName, err)
 			return err
 		}
 		if x64, err := strconv.ParseFloat(csvRecord[12], 32); err != nil {
-			log.Errorf("generateMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[12], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[12], fileName, err)
 			return err
 		} else {
 			x = float32(x64)
 		}
 		if y64, err := strconv.ParseFloat(csvRecord[13], 32); err != nil {
-			log.Errorf("generateMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[13], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[13], fileName, err)
 			return err
 		} else {
 			y = float32(y64)
 		}
 		if w64, err := strconv.ParseFloat(csvRecord[14], 32); err != nil {
-			log.Errorf("generateMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[14], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[14], fileName, err)
 			return err
 		} else {
 			w = float32(w64)
 		}
 		if h64, err := strconv.ParseFloat(csvRecord[15], 32); err != nil {
-			log.Errorf("generateMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[15], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand float32 value from record %d value %s from %s with error %s", record, csvRecord[15], fileName, err)
 			return err
 		} else {
 			h = float32(h64)
 		}
+		if q, err = strconv.Atoi(csvRecord[16]); err != nil {
+			log.Errorf("LoadMarkers: unable to to understand int value from record %d value %s from %s with error %s", record, csvRecord[16], fileName, err)
+			return err
+		}
+		if size, err = strconv.Atoi(csvRecord[17]); err != nil {
+			log.Errorf("LoadMarkers: unable to to understand int value from record %d value %s from %s with error %s", record, csvRecord[17], fileName, err)
+			return err
+		}
+		if score, err = strconv.Atoi(csvRecord[18]); err != nil {
+			log.Errorf("LoadMarkers: unable to to understand int value from record %d value %s from %s with error %s", record, csvRecord[18], fileName, err)
+			return err
+		}
 		if cAt, err := time.Parse(CSVTimestampFormat, csvRecord[21]); err != nil {
-			log.Errorf("generateMarkers: unable to to understand timestamp value from record %d value %s from %s with error %s", record, csvRecord[21], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand timestamp value from record %d value %s from %s with error %s", record, csvRecord[21], fileName, err)
 			return err
 		} else {
 			createdAt = cAt
 		}
 		if uAt, err := time.Parse(CSVTimestampFormat, csvRecord[22]); err != nil {
-			log.Errorf("generateMarkers: unable to to understand timestamp value from record %d value %s from %s with error %s", record, csvRecord[22], fileName, err)
+			log.Errorf("LoadMarkers: unable to to understand timestamp value from record %d value %s from %s with error %s", record, csvRecord[22], fileName, err)
 			return err
 		} else {
 			updatedAt = uAt

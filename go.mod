@@ -4,7 +4,9 @@ go 1.25.0
 
 require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
+	github.com/dustin/go-humanize v1.0.1
 	github.com/jackc/pgx/v5 v5.8.0
+	github.com/klauspost/cpuid/v2 v2.3.0
 	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/qdrant/go-client v1.17.1
 	github.com/sirupsen/logrus v1.9.4
