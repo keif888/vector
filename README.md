@@ -30,7 +30,7 @@ go run vector.go
 ## Development Commands
 
 ```
-go run vector.go -filename=./output/test.csv -overwrite
+go run vector.go -filename=./output/test.5k.csv -overwrite -markers 5000
 
 go run vector.go -db=sqlite -dsn=./output/develop.db -action=loadcsv -filename=./output/test.csv
 go run vector.go -db=mysql -dsn="develop:develop@tcp(localhost:4001)/develop?charset=utf8mb4,utf8&collation=utf8mb4_unicode_ci&parseTime=true" -action=loadcsv -filename=./output/test.csv
@@ -74,6 +74,7 @@ Using the eculidean equation returns the same results from all products.
 1. SQLite-vec does not support k=50 and LIMIT 1 if there is not a join in the query. (the 50 and the 1 are just examples, no value works)
 1. Qdrant supports a single metric per collection, so you can NOT change the equation between Cosine and Euclidean on the fly.  Requires a complete reload.
 1. SQLite-vec using "match" uses the eculidean equation, and it can not be configured.
+1. Qdrant can NOT update a key:value pair to key:NULL.  It just deletes the key:value pair combination.
 
 
 ```
