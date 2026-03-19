@@ -16,12 +16,14 @@ import (
 	"github.com/keif888/vector/pkg/dsn"
 	"github.com/keif888/vector/pkg/vector/alg"
 	"github.com/klauspost/cpuid/v2"
+	"github.com/qdrant/go-client/qdrant"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
 
 func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logrus.Logger) (err error) {
 	start := time.Now()
+	postgresLimit := 15
 	if bruteForce {
 		// 9s for 5k from MariaDB
 		// 15s to get source for 25k records from MariaDB
@@ -108,11 +110,156 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 
 	} else {
 		if dataSourceName.Driver == dsn.DriverQdrant {
-			// ToDo: implement cluster search with Qdrant
+			clusterCount := 0
+			dbTime := time.Second * 0
+			matchTime := time.Second * 0
+			matchCount := 0
+			var startdb time.Time
+			var matchdb time.Time
+
+			connectQdrant(dataSourceName)
+			defer func() {
+				if err = dbms.QClient().Close(); err != nil {
+					log.Errorf("QueryMarkers: Client Close failed with %s", err)
+				}
+			}()
+
+			unclustered := map[string]Embedding32{}
+			clusters := map[string]string{}
+			updateDB := true
+			offset := uint64(0)
+
+			allRead := false
+			for !allRead {
+				if result, err := dbms.QClient().Scroll(context.Background(), &qdrant.ScrollPoints{
+					CollectionName: VectorMarker{}.TableName(),
+					Filter: &qdrant.Filter{
+						Must: []*qdrant.Condition{
+							qdrant.NewMatch("Type", MarkerFace),
+							qdrant.NewMatchBool("Invalid", false),
+							//				Where("embeddings_json <> ''").
+							qdrant.NewRange("Size", &qdrant.Range{
+								Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
+							}),
+							qdrant.NewRange("Score", &qdrant.Range{
+								Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
+							}),
+							qdrant.NewMatch("FaceID", ""),
+							qdrant.NewIsNull("ClusteredAt"),
+						},
+					},
+					Limit:       qdrant.PtrOf(uint32(1000)),
+					Offset:      qdrant.NewIDNum(offset),
+					WithPayload: qdrant.NewWithPayload(true),
+					WithVectors: qdrant.NewWithVectors(true),
+				}); err != nil {
+					log.Errorf("ClusterNew: Scroll of offset=%d failed with %s", offset, err)
+					return err
+				} else {
+					log.Debugf("ClusterNew: Scroll returned %d records", len(result))
+					for _, r := range result {
+						unclustered[r.Payload["UID"].GetStringValue()] = r.Vectors.GetVector().GetDense().Data
+						if r.Id.GetNum() > offset {
+							offset = r.Id.GetNum()
+						}
+					}
+					if len(result) != 1000 {
+						allRead = true
+					}
+				}
+			}
+			for len(unclustered) != 0 {
+				currentMarker := ""
+				for markerUID := range unclustered {
+					currentMarker = markerUID
+					break
+				}
+				faceEmbedding := unclustered[currentMarker]
+				score := float32(ClusterDist)
+				limit := uint64(2000000)
+				matchdb = time.Now()
+				if results, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+					CollectionName: VectorMarker{}.TableName(),
+					Query:          qdrant.NewQueryDense(faceEmbedding),
+					Filter: &qdrant.Filter{
+						Must: []*qdrant.Condition{
+							qdrant.NewMatch("Type", MarkerFace),
+							qdrant.NewMatchBool("Invalid", false),
+							qdrant.NewRange("Size", &qdrant.Range{
+								Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
+							}),
+							qdrant.NewRange("Score", &qdrant.Range{
+								Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
+							}),
+							qdrant.NewMatch("FaceID", ""),
+							qdrant.NewIsNull("ClusteredAt"),
+						},
+					},
+					Limit:          &limit,
+					ScoreThreshold: &score,
+					WithPayload:    qdrant.NewWithPayload(true),
+					WithVectors:    qdrant.NewWithVectors(false),
+				}); err != nil {
+					log.Errorf("QueryMarkers: Query for matches failed with %s", err)
+					return err
+				} else {
+					matchTime += time.Since(matchdb)
+					matchCount++
+					pointIDs := []*qdrant.PointId{}
+
+					ej, _ := json.Marshal(faceEmbedding)
+					if len(results) >= ClusterCore {
+						clusterCount++
+						clusters[currentMarker] = string(ej)
+					}
+
+					for _, result := range results {
+						markerFound := result.Payload["UID"].GetStringValue()
+						pointIDs = append(pointIDs, result.Id)
+						delete(unclustered, markerFound)
+					}
+
+					if updateDB {
+						startdb = time.Now()
+						s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
+						faceID := base32.StdEncoding.EncodeToString(s[:])
+						if len(pointIDs) == 1 {
+							faceID = ""
+						}
+						cAt := time.Now().Format(CSVTimestampFormat)
+
+						request := &qdrant.SetPayloadPoints{
+							CollectionName: VectorMarker{}.TableName(),
+							Payload: qdrant.NewValueMap(map[string]any{
+								"FaceID":      faceID,
+								"ClusteredAt": cAt,
+							},
+							),
+							PointsSelector: qdrant.NewPointsSelector(pointIDs...),
+						}
+
+						if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
+							log.Errorf("ClusterNew: update failed with err %s", err)
+							return err
+						}
+						dbTime += time.Since(startdb)
+					}
+				}
+			}
+			log.Infof("match time was %s for %d matches, update time was %s", matchTime, matchCount, dbTime)
+			if clusterCount > 0 {
+				log.Infof("ClusterNew: found %s", english.Plural(clusterCount, "new cluster", "new clusters"))
+			} else {
+				log.Debugf("ClusterNew: found no new clusters")
+			}
+
 		} else {
 			clusterCount := 0
 			dbTime := time.Second * 0
+			matchTime := time.Second * 0
+			matchCount := 0
 			var startdb time.Time
+			var matchdb time.Time
 			var db *dbms.DbConn
 			if db, err = connectGormDB(dataSourceName.Driver, dataSourceName.ToString()); err != nil {
 				db.Close()
@@ -171,9 +318,24 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				}
 				faceEmbedding := unclustered[currentMarker]
 				var distResults []DistResult
-				startdb = time.Now()
-				//selectStr := fmt.Sprintf("VEC_DISTANCE_EUCLIDEAN(embedding, (select embedding from vector_marker_faces where marker_uid = '%s')) as distance, vector_marker_faces.marker_uid", currentMarker)
-				if result := dbms.Db().
+				matchdb = time.Now()
+				var selectStmt, whereStmt string
+				switch dataSourceName.Driver {
+				case dsn.DriverMySQL:
+					selectStmt = "VEC_DISTANCE_EUCLIDEAN(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) as distance, vector_marker_faces.marker_uid"
+					whereStmt = "VEC_DISTANCE_EUCLIDEAN(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) <= ?"
+				case dsn.DriverPostgres:
+					selectStmt = "embedding <-> (select embedding from vector_marker_faces where marker_uid = ?) as distance, vector_marker_faces.marker_uid"
+					whereStmt = "embedding <-> (select embedding from vector_marker_faces where marker_uid = ?) <= ?"
+				case dsn.DriverSQLite3:
+					selectStmt = "vec_distance_L2(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) as distance, vector_marker_faces.marker_uid"
+					whereStmt = "embedding match (select embedding from vector_marker_faces where marker_uid = ?) AND k = 1024 AND distance <= ?"
+				default:
+					// How did we get here?
+					return fmt.Errorf("ClusterNew: dsn driver %s not recognised", dataSourceName.Driver)
+				}
+
+				query := dbms.Db().
 					Model(&VectorMarker{}).
 					Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
 					Where("marker_type = ?", MarkerFace).
@@ -182,17 +344,21 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					Where("score >= ?", ClusterScoreThreshold).
 					Where("face_id = ''").
 					Where("clustered_at is null").
-					Where("VEC_DISTANCE_EUCLIDEAN(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) <= ?", currentMarker, ClusterDist).
-					// Where(DBEmbedQuery("embedding").
-					// 	LessThanOrEquals(DistanceEquation(equation), ClusterDist, faceEmbedding),
-					// ).
-					// Select("?, vector_marker_faces.marker_uid", DBEmbedQuery("embedding").Distance(DistanceEquation(equation), faceEmbedding, "distance")).
-					Select("VEC_DISTANCE_EUCLIDEAN(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) as distance, vector_marker_faces.marker_uid", currentMarker).
+					Where(whereStmt, currentMarker, ClusterDist).
+					Select(selectStmt, currentMarker)
+				if dataSourceName.Driver == dsn.DriverPostgres {
+					query.
+						Order("distance").
+						Limit(postgresLimit)
+				}
+				if result := query.
 					Find(&distResults); result.Error != nil {
 					log.Errorf("ClusterNew: Select failed with %s", result.Error)
 					return result.Error
 				} else {
-					dbTime += time.Since(startdb)
+					matchTime += time.Since(matchdb)
+					matchCount++
+					// return nil
 					if len(distResults) >= ClusterCore {
 						clusterCount++
 						clusters[currentMarker] = faceEmbedding
@@ -200,25 +366,34 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					markerUIDs := []string{}
 					for _, r := range distResults {
 						markerUIDs = append(markerUIDs, r.MarkerUID)
-						delete(unclustered, r.MarkerUID)
+						if r.MarkerUID != currentMarker || dataSourceName.Driver != dsn.DriverPostgres || (dataSourceName.Driver == dsn.DriverPostgres && len(distResults) != postgresLimit && r.MarkerUID == currentMarker) {
+							delete(unclustered, r.MarkerUID)
+						} else {
+							log.Debugf("clusternew: postgres will retry %s", currentMarker)
+						}
 					}
-					if updateDB {
-						startdb = time.Now()
-						e, _ := UnmarshalEmbedding(faceEmbedding)
-						ej, _ := json.Marshal(e)
-						s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
-						faceID := base32.StdEncoding.EncodeToString(s[:])
-						if len(markerUIDs) == 1 {
-							faceID = ""
+					// Just in case there is only postgresLimit records for a marker in Postgres.
+					if len(distResults) == 0 {
+						delete(unclustered, currentMarker)
+					} else {
+						if updateDB {
+							startdb = time.Now()
+							e, _ := UnmarshalEmbedding(faceEmbedding)
+							ej, _ := json.Marshal(e)
+							s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
+							faceID := base32.StdEncoding.EncodeToString(s[:])
+							if len(markerUIDs) == 1 {
+								faceID = ""
+							}
+							cAt := time.Now()
+							if _, err = gorm.G[VectorMarker](dbms.Db()).
+								Where("marker_uid in (?)", markerUIDs).
+								Updates(context.Background(), VectorMarker{ClusteredAt: &cAt, FaceID: faceID}); err != nil {
+								log.Errorf("ClusterNew: update failed with err %s", err)
+								return err
+							}
+							dbTime += time.Since(startdb)
 						}
-						cAt := time.Now()
-						if _, err = gorm.G[VectorMarker](dbms.Db()).
-							Where("marker_uid in (?)", markerUIDs).
-							Updates(context.Background(), VectorMarker{ClusteredAt: &cAt, FaceID: faceID}); err != nil {
-							log.Errorf("ClusterNew: update failed with err %s", err)
-							return err
-						}
-						dbTime += time.Since(startdb)
 					}
 				}
 			}
@@ -384,7 +559,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					}
 				}
 			*/
-			log.Infof("database time was %s", dbTime)
+			log.Infof("match time was %s for %d matches, update time was %s", matchTime, matchCount, dbTime)
 			if clusterCount > 0 {
 				log.Infof("ClusterNew: found %s", english.Plural(clusterCount, "new cluster", "new clusters"))
 			} else {
