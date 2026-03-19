@@ -1192,6 +1192,9 @@ func QueryMatchMarkers(dataSourceName dsn.DSN, markerUID string, equation int, b
 				log.Errorf("QueryMatchMarkers: Select failed with %s", result.Error)
 				return result.Error
 			} else {
+				if len(distResults) == 0 {
+					log.Infof("No matches found for %s", markerUID)
+				}
 				for _, r := range distResults {
 					switch {
 					case r.Distance < 0:
