@@ -145,7 +145,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 								Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
 							}),
 							qdrant.NewMatch("FaceID", ""),
-							qdrant.NewIsNull("ClusteredAt"),
+							qdrant.NewMatchBool("Clustered", false),
 						},
 					},
 					Limit:       qdrant.PtrOf(uint32(1000)),
@@ -192,7 +192,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 								Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
 							}),
 							qdrant.NewMatch("FaceID", ""),
-							qdrant.NewIsNull("ClusteredAt"),
+							qdrant.NewMatchBool("Clustered", false),
 						},
 					},
 					Limit:          &limit,
@@ -226,13 +226,12 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						if len(pointIDs) == 1 {
 							faceID = ""
 						}
-						cAt := time.Now().Format(CSVTimestampFormat)
 
 						request := &qdrant.SetPayloadPoints{
 							CollectionName: VectorMarker{}.TableName(),
 							Payload: qdrant.NewValueMap(map[string]any{
-								"FaceID":      faceID,
-								"ClusteredAt": cAt,
+								"FaceID":    faceID,
+								"Clustered": true,
 							},
 							),
 							PointsSelector: qdrant.NewPointsSelector(pointIDs...),
@@ -288,7 +287,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				Where("size >= ?", ClusterSizeThreshold).
 				Where("score >= ?", ClusterScoreThreshold).
 				Where("face_id = ''").
-				Where("clustered_at is null").
+				Where("clustered = false").
 				Rows(); err != nil {
 				log.Errorf("ClusterNew: Select failed with %s", err)
 				return err
@@ -343,7 +342,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					Where("size >= ?", ClusterSizeThreshold).
 					Where("score >= ?", ClusterScoreThreshold).
 					Where("face_id = ''").
-					Where("clustered_at is null").
+					Where("clustered = false").
 					Where(whereStmt, currentMarker, ClusterDist).
 					Select(selectStmt, currentMarker)
 				if dataSourceName.Driver == dsn.DriverPostgres {
@@ -375,6 +374,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					// Just in case there is only postgresLimit records for a marker in Postgres.
 					if len(distResults) == 0 {
 						delete(unclustered, currentMarker)
+						log.Debugf("clusternew: no records found for %s", currentMarker)
 					} else {
 						if updateDB {
 							startdb = time.Now()
@@ -385,10 +385,9 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 							if len(markerUIDs) == 1 {
 								faceID = ""
 							}
-							cAt := time.Now()
 							if _, err = gorm.G[VectorMarker](dbms.Db()).
 								Where("marker_uid in (?)", markerUIDs).
-								Updates(context.Background(), VectorMarker{ClusteredAt: &cAt, FaceID: faceID}); err != nil {
+								Updates(context.Background(), VectorMarker{Clustered: true, FaceID: faceID}); err != nil {
 								log.Errorf("ClusterNew: update failed with err %s", err)
 								return err
 							}
@@ -418,7 +417,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					Where("size >= ?", ClusterSizeThreshold).
 					Where("score >= ?", ClusterScoreThreshold).
 					Where("face_id = ''").
-					Where("clustered_at is null").
+					Where("clustered = false").
 					Rows(); err != nil {
 					log.Errorf("ClusterNew: Select failed with %s", err)
 					return err
@@ -457,7 +456,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						Where("size >= ?", ClusterSizeThreshold).
 						Where("score >= ?", ClusterScoreThreshold).
 						Where("face_id = ''").
-						Where("clustered_at is null").
+						Where("clustered = false").
 						Where(DBEmbedQuery("embedding").
 							LessThanOrEquals(DistanceEquation(equation), ClusterDist, faceEmbedding),
 						).
@@ -479,7 +478,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						// startdb = time.Now()
 						// if _, err = gorm.G[VectorMarker](dbms.Db()).
 						// 	Where("marker_uid in (?)", markerUIDs).
-						// 	Update(context.Background(), "clustered_at", time.Now()); err != nil {
+						// 	Update(context.Background(), "clustered", true); err != nil {
 						// 	log.Errorf("ClusterNew: update failed with err %s", err)
 						// 	return err
 						// }
@@ -506,7 +505,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						Where("size >= ?", ClusterSizeThreshold).
 						Where("score >= ?", ClusterScoreThreshold).
 						Where("face_id = ''").
-						Where("clustered_at is null").
+						Where("clustered = false").
 						First(&matchMe); result.Error != nil {
 						if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 							break
@@ -531,7 +530,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						Where("size >= ?", ClusterSizeThreshold).
 						Where("score >= ?", ClusterScoreThreshold).
 						Where("face_id = ''").
-						Where("clustered_at is null").
+						Where("clustered = false").
 						Where(DBEmbedQuery("embedding").
 							LessThanOrEquals(DistanceEquation(equation), ClusterDist, faceEmbedding),
 						).
@@ -551,7 +550,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						startdb = time.Now()
 						if _, err = gorm.G[VectorMarker](dbms.Db()).
 							Where("marker_uid in (?)", markerUIDs).
-							Update(context.Background(), "clustered_at", time.Now()); err != nil {
+							Update(context.Background(), "clustered", true); err != nil {
 							log.Errorf("ClusterNew: update failed with err %s", err)
 							return err
 						}

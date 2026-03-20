@@ -25,9 +25,9 @@ func ResetMatchData(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 		}
 		defer db.Close()
 
-		//updateMap := map[string]any{"clustered_at": nil, "face_id": ""}
+		//updateMap := map[string]any{"clustered": false, "face_id": ""}
 
-		if results, err := gorm.G[any](dbms.Db()).Table(VectorMarker{}.TableName()).Where("clustered_at is not null").Updates(context.Background(), map[string]any{"clustered_at": nil, "face_id": ""}); err != nil {
+		if results, err := gorm.G[any](dbms.Db()).Table(VectorMarker{}.TableName()).Where("clustered = true").Updates(context.Background(), map[string]any{"clustered": false, "face_id": ""}); err != nil {
 			log.Errorf("ResetMatchData: VectorMarkerFace first failed with %s", err)
 			return err
 		} else {
@@ -43,10 +43,10 @@ func ResetMatchData(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 
 		request := &qdrant.SetPayloadPoints{
 			CollectionName: VectorMarker{}.TableName(),
-			Payload:        qdrant.NewValueMap(map[string]any{"ClusteredAt": nil, "FaceID": ""}), // This removes the ClusteredAt key!
+			Payload:        qdrant.NewValueMap(map[string]any{"Clustered": false, "FaceID": ""}),
 			PointsSelector: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
-				MustNot: []*qdrant.Condition{
-					qdrant.NewIsEmpty("ClusteredAt"),
+				Must: []*qdrant.Condition{
+					qdrant.NewMatchBool("Clustered", true),
 				},
 			}),
 		}
