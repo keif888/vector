@@ -14,6 +14,7 @@ type dbscanClusterer struct {
 	now      func() time.Time
 	logAfter time.Duration
 	logf     func(done, total int)
+	savef    func(embeddings [][]float64)
 
 	// slices holding the cluster mapping and sizes. Access is synchronized to avoid read during computation.
 	mu sync.RWMutex
@@ -48,16 +49,16 @@ type dbscanClusterer struct {
 // DBSCAN implements density-based clustering with concurrent nearest neighbor computation.
 // The number of goroutines is controlled via workers (0 picks a default).
 func DBSCAN(minpts int, eps float64, workers int, distance DistFunc) (HardClusterer, error) {
-	return newDBSCANClusterer(minpts, eps, workers, distance, 0, nil)
+	return newDBSCANClusterer(minpts, eps, workers, distance, 0, nil, nil)
 }
 
 // DBSCANWithProgress implements DBSCAN with optional time-based progress reporting.
-func DBSCANWithProgress(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int)) (HardClusterer, error) {
-	return newDBSCANClusterer(minpts, eps, workers, distance, interval, progressf)
+func DBSCANWithProgress(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int), savef func(embedding [][]float64)) (HardClusterer, error) {
+	return newDBSCANClusterer(minpts, eps, workers, distance, interval, progressf, savef)
 }
 
 // newDBSCANClusterer validates the options and creates a DBSCAN clusterer instance.
-func newDBSCANClusterer(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int)) (HardClusterer, error) {
+func newDBSCANClusterer(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int), savef func(embedding [][]float64)) (HardClusterer, error) {
 	if minpts < 1 {
 		return nil, errZeroMinpts
 	}
@@ -87,6 +88,7 @@ func newDBSCANClusterer(minpts int, eps float64, workers int, distance DistFunc,
 		now:      time.Now,
 		logAfter: interval,
 		logf:     progressf,
+		savef:    savef,
 	}, nil
 }
 
@@ -210,6 +212,16 @@ func (c *dbscanClusterer) run() {
 					c.b[m]++
 				}
 			}
+			if c.savef != nil {
+				result := make([][]float64, 0, c.b[m])
+				for ri, rv := range c.a {
+					if rv == n {
+						result = append(result, c.d[ri])
+					}
+				}
+				c.savef(result)
+			}
+			c.logf(c.a[i], c.b[m])
 
 			n++
 			m++

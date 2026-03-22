@@ -24,6 +24,7 @@ import (
 func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logrus.Logger) (err error) {
 	start := time.Now()
 	postgresLimit := 15
+	elapsed := time.Now()
 	if bruteForce {
 		// 9s for 5k from MariaDB
 		// 15s to get source for 25k records from MariaDB
@@ -41,6 +42,9 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 		default:
 			return fmt.Errorf("driver %s is not supported for current mode", dataSourceName.Driver)
 		}
+
+		dbms.Db().AutoMigrate(&Face{})
+
 		// Fetch unclustered face embeddings.
 		embeddings, err := QueryEmbeddings(false, true, ClusterSizeThreshold, ClusterScoreThreshold)
 		if err != nil {
@@ -50,10 +54,12 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 		log.Debugf("ClusterNew: found %d unclustered faces", len(embeddings))
 		var c alg.HardClusterer
 
+		savef := SaveLearnResult
+
 		// See https://dl.photoprism.app/research/ for research on face clustering algorithms.
 		if c, err = alg.DBSCANWithProgress(ClusterCore, ClusterDist, IndexWorkers(), alg.EuclideanDist, 15*time.Minute, func(done, total int) {
 			log.Infof("cluster: processing %d of %d", done, total)
-		}); err != nil {
+		}, savef); err != nil {
 			return err
 		} else if err = c.Learn(embeddings.Float64()); err != nil {
 			return err
@@ -81,6 +87,14 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 			}
 
 			results[n-1] = append(results[n-1], embeddings[i])
+		}
+
+		for _, n := range guesses {
+			if n < 1 {
+				continue
+			}
+
+			log.Infof("len results[%d] = %d", n-1, len(results[n-1]))
 		}
 
 		// Skipping the face creation process.
@@ -156,7 +170,6 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					log.Errorf("ClusterNew: Scroll of offset=%d failed with %s", offset, err)
 					return err
 				} else {
-					log.Debugf("ClusterNew: Scroll returned %d records", len(result))
 					for _, r := range result {
 						unclustered[r.Payload["UID"].GetStringValue()] = r.Vectors.GetVector().GetDense().Data
 						if r.Id.GetNum() > offset {
@@ -168,7 +181,13 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					}
 				}
 			}
+			log.Infof("ClusterNew: found %d unclustered markers", len(unclustered))
+
 			for len(unclustered) != 0 {
+				if time.Since(elapsed) > time.Minute*15 {
+					elapsed = time.Now()
+					log.Infof("ClusterNew: %d remaining", len(unclustered))
+				}
 				currentMarker := ""
 				for markerUID := range unclustered {
 					currentMarker = markerUID
@@ -176,7 +195,8 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				}
 				faceEmbedding := unclustered[currentMarker]
 				score := float32(ClusterDist)
-				limit := uint64(2000000)
+				// ToDo: Add retry if 15 are found, like the Postgres code.
+				limit := uint64(15) // down from 2000000
 				matchdb = time.Now()
 				if results, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 					CollectionName: VectorMarker{}.TableName(),
@@ -308,8 +328,13 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				Distance  float64
 				MarkerUID string
 			}
+			log.Infof("ClusterNew: found %d unclustered markers", len(unclustered))
 
 			for len(unclustered) != 0 {
+				if time.Since(elapsed) > time.Minute*15 {
+					elapsed = time.Now()
+					log.Infof("ClusterNew: %d remaining", len(unclustered))
+				}
 				currentMarker := ""
 				for markerUID := range unclustered {
 					currentMarker = markerUID
@@ -334,22 +359,42 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					return fmt.Errorf("ClusterNew: dsn driver %s not recognised", dataSourceName.Driver)
 				}
 
-				query := dbms.Db().
-					Model(&VectorMarker{}).
-					Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
-					Where("marker_type = ?", MarkerFace).
-					Where("marker_invalid = FALSE").
-					Where("size >= ?", ClusterSizeThreshold).
-					Where("score >= ?", ClusterScoreThreshold).
-					Where("face_id = ''").
-					Where("clustered = false").
-					Where(whereStmt, currentMarker, ClusterDist).
-					Select(selectStmt, currentMarker)
+				var query *gorm.DB
+
 				if dataSourceName.Driver == dsn.DriverPostgres {
+					if r := dbms.Db().Exec("SET hnsw.ef_search = 120;SET hnsw.iterative_scan = strict_order;"); r.Error != nil { //SET hnsw.ef_search = 120;
+						log.Errorf("ClusterNew: SETs failed with %s", r.Error)
+						return r.Error
+
+					}
+					// CTE as per pgvector readme.
+					query = dbms.Db().
+						Raw("WITH face_match AS MATERIALIZED ("+
+							"SELECT embedding <-> (select embedding from vector_marker_faces where marker_uid = ?) as distance, vector_marker_faces.marker_uid "+
+							"FROM vector_markers INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid "+
+							"WHERE marker_type = ? AND marker_invalid = FALSE AND size >= ? AND score >= ? "+
+							"AND face_id = '' AND clustered = false ORDER BY distance LIMIT ?) "+
+							"SELECT distance, marker_uid FROM face_match "+
+							"WHERE distance <= ? ORDER BY distance", currentMarker, MarkerFace, ClusterSizeThreshold, ClusterScoreThreshold, postgresLimit, ClusterDist)
+				} else {
+					query = dbms.Db().
+						Model(&VectorMarker{}).
+						Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
+						Where("marker_type = ?", MarkerFace).
+						Where("marker_invalid = FALSE").
+						Where("size >= ?", ClusterSizeThreshold).
+						Where("score >= ?", ClusterScoreThreshold).
+						Where("face_id = ''").
+						Where("clustered = false").
+						Where(whereStmt, currentMarker, ClusterDist).
+						Select(selectStmt, currentMarker)
+				}
+				if dataSourceName.Driver == dsn.DriverPostgreSQL {
 					query.
 						Order("distance").
 						Limit(postgresLimit)
 				}
+
 				if result := query.
 					Find(&distResults); result.Error != nil {
 					log.Errorf("ClusterNew: Select failed with %s", result.Error)
@@ -378,18 +423,24 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					} else {
 						if updateDB {
 							startdb = time.Now()
-							e, _ := UnmarshalEmbedding(faceEmbedding)
-							ej, _ := json.Marshal(e)
-							s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
-							faceID := base32.StdEncoding.EncodeToString(s[:])
-							if len(markerUIDs) == 1 {
-								faceID = ""
-							}
-							if _, err = gorm.G[VectorMarker](dbms.Db()).
-								Where("marker_uid in (?)", markerUIDs).
-								Updates(context.Background(), VectorMarker{Clustered: true, FaceID: faceID}); err != nil {
-								log.Errorf("ClusterNew: update failed with err %s", err)
-								return err
+							if _, ok := clusters[currentMarker]; !ok && len(markerUIDs) < ClusterCore {
+								if _, err = gorm.G[VectorMarker](dbms.Db()).
+									Where("marker_uid in (?)", markerUIDs).
+									Updates(context.Background(), VectorMarker{Clustered: true}); err != nil {
+									log.Errorf("ClusterNew: update failed with err %s", err)
+									return err
+								}
+							} else {
+								e, _ := UnmarshalEmbedding(faceEmbedding)
+								ej, _ := json.Marshal(e)
+								s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
+								faceID := base32.StdEncoding.EncodeToString(s[:])
+								if _, err = gorm.G[VectorMarker](dbms.Db()).
+									Where("marker_uid in (?)", markerUIDs).
+									Updates(context.Background(), VectorMarker{Clustered: true, FaceID: faceID}); err != nil {
+									log.Errorf("ClusterNew: update failed with err %s", err)
+									return err
+								}
 							}
 							dbTime += time.Since(startdb)
 						}
@@ -700,3 +751,40 @@ func (embeddings Embeddings) Float64() [][]float64 {
 
 	return result
 }
+
+// Float64ToEmbeddings converts a float64[][] to an Embeddings
+func Float64ToEmbeddings(f [][]float64) (result Embeddings) {
+	result = make(Embeddings, len(f))
+	for i, e := range f {
+		result[i] = e
+	}
+	return
+}
+
+// SaveLearnResult saves the face that was found.  But it doesn't allow a restart of clustering from the crash point.
+// ToDo: Update the Clustered flag on the Marker.  The issue, how do we determine which marker we were playing with?
+func SaveLearnResult(f [][]float64) {
+	cluster := Float64ToEmbeddings(f)
+
+	if f := NewFace("", SrcAuto, cluster); f == nil {
+		log.Errorf("faces: face must not be nil - you may have found a bug")
+	} else if f.SkipMatching() {
+		log.Infof("faces: skipped cluster %s, embedding not distinct enough", f.ID)
+	} else if err := f.Create(); err == nil {
+		// added = append(added, *f)
+		log.Debugf("faces: added cluster %s based on %s, radius %f", f.ID, english.Plural(f.Samples, "sample", "samples"), f.SampleRadius)
+	} else if err = f.Updates(Values{"updated_at": time.Now()}); err != nil {
+		log.Errorf("faces: %s", err)
+	} else {
+		log.Debugf("faces: updated cluster %s", f.ID)
+	}
+
+}
+
+// SkipMatching checks whether the face should be skipped when matching.
+func (m *Face) SkipMatching() bool {
+	return m.FaceKind > 1 || m.Embedding().SkipMatching()
+}
+
+// Values is a shorthand alias for map[string]interface{}.
+type Values = map[string]any

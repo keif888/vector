@@ -118,26 +118,6 @@ func (VectorMarker) TableName() string {
 	return "vector_markers"
 }
 
-// Face represents the face of a Subject.
-type Face struct {
-	ID              string          `gorm:"type:bytes;size:64;primaryKey;autoIncrement:false;" json:"ID" yaml:"ID"`
-	FaceSrc         string          `gorm:"type:bytes;size:8;" json:"Src" yaml:"Src,omitempty"`
-	FaceKind        int             `json:"Kind" yaml:"Kind,omitempty"`
-	FaceHidden      bool            `json:"Hidden" yaml:"Hidden,omitempty"`
-	SubjUID         string          `gorm:"type:bytes;size:42;index;default:'';" json:"SubjUID" yaml:"SubjUID,omitempty"`
-	Samples         int             `json:"Samples" yaml:"Samples,omitempty"`
-	SampleRadius    float64         `json:"SampleRadius" yaml:"SampleRadius,omitempty"`
-	Collisions      int             `json:"Collisions" yaml:"Collisions,omitempty"`
-	CollisionRadius float64         `json:"CollisionRadius" yaml:"CollisionRadius,omitempty"`
-	MergeRetry      uint8           `gorm:"default:0" json:"-" yaml:"-"`
-	MergeNotes      string          `gorm:"size:255;default:'';" json:"-" yaml:"-"`
-	EmbeddingJSON   json.RawMessage `gorm:"type:bytes;size:66666;" json:"-" yaml:"EmbeddingJSON,omitempty"`
-	embedding       Embedding       `gorm:"-" yaml:"-"`
-	MatchedAt       *time.Time      `json:"MatchedAt" yaml:"MatchedAt,omitempty"`
-	CreatedAt       time.Time       `json:"CreatedAt" yaml:"CreatedAt,omitempty"`
-	UpdatedAt       time.Time       `json:"UpdatedAt" yaml:"UpdatedAt,omitempty"`
-}
-
 // Embedding represents a face embedding.
 type Embedding []float64
 
@@ -352,60 +332,6 @@ func (m *VectorMarker) Embeddings() Embeddings {
 	}
 
 	return m.embeddings
-}
-
-// Embedding returns parsed face embedding.
-func (m *Face) Embedding() Embedding {
-	if len(m.EmbeddingJSON) == 0 {
-		return Embedding{}
-	} else if len(m.embedding) > 0 {
-		return m.embedding
-	} else if err := json.Unmarshal(m.EmbeddingJSON, &m.embedding); err != nil {
-		log.Errorf("failed parsing face embedding json: %s", err)
-	}
-
-	return m.embedding
-}
-
-// Match tests if embeddings match this face.
-func (m *Face) Match(embeddings Embeddings) (match bool, dist float64) {
-	dist = -1
-
-	if embeddings.Empty() {
-		// Np embeddings, no match.
-		return false, dist
-	}
-
-	faceEmbedding := m.Embedding()
-
-	if len(faceEmbedding) == 0 {
-		// Should never happen.
-		return false, dist
-	}
-
-	// Calculate the smallest distance to embeddings.
-	for _, e := range embeddings {
-		if d := e.Dist(faceEmbedding); d < dist || dist < 0 {
-			dist = d
-		}
-	}
-
-	// Any reasons embeddings do not match this face?
-	switch {
-	case dist < 0:
-		// Should never happen.
-		return false, dist
-	case dist > MatchDist+ClusterRadius: // (m.SampleRadius + face.MatchDist)
-		//	case dist > (m.SampleRadius + MatchDist):
-		// Too far.
-		return false, dist
-		//	case m.CollisionRadius > CollisionDist && dist > m.CollisionRadius:
-		// Within radius of reported collisions.
-		//		return false, dist
-	}
-
-	// If not, at least one of the embeddings match!
-	return true, dist
 }
 
 // Empty tests if embeddings are empty.
