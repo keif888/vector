@@ -34,6 +34,9 @@ type Face struct {
 	UpdatedAt       time.Time       `json:"UpdatedAt" yaml:"UpdatedAt,omitempty"`
 }
 
+// Faces represents a Face slice.
+type Faces []Face
+
 // Embedding returns parsed face embedding.
 func (m *Face) Embedding() Embedding {
 	if len(m.EmbeddingJSON) == 0 {

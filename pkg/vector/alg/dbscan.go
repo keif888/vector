@@ -14,7 +14,10 @@ type dbscanClusterer struct {
 	now      func() time.Time
 	logAfter time.Duration
 	logf     func(done, total int)
-	savef    func(embeddings [][]float64)
+	// function to save the embeddings back to the database
+	savef func(embeddings [][]float64) (faceID string)
+	// holds the list of faceID's that were created whilst saving results
+	faces []string
 
 	// slices holding the cluster mapping and sizes. Access is synchronized to avoid read during computation.
 	mu sync.RWMutex
@@ -53,12 +56,12 @@ func DBSCAN(minpts int, eps float64, workers int, distance DistFunc) (HardCluste
 }
 
 // DBSCANWithProgress implements DBSCAN with optional time-based progress reporting.
-func DBSCANWithProgress(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int), savef func(embedding [][]float64)) (HardClusterer, error) {
+func DBSCANWithProgress(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int), savef func(embedding [][]float64) (faceID string)) (HardClusterer, error) {
 	return newDBSCANClusterer(minpts, eps, workers, distance, interval, progressf, savef)
 }
 
 // newDBSCANClusterer validates the options and creates a DBSCAN clusterer instance.
-func newDBSCANClusterer(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int), savef func(embedding [][]float64)) (HardClusterer, error) {
+func newDBSCANClusterer(minpts int, eps float64, workers int, distance DistFunc, interval time.Duration, progressf func(done, total int), savef func(embedding [][]float64) (faceID string)) (HardClusterer, error) {
 	if minpts < 1 {
 		return nil, errZeroMinpts
 	}
@@ -92,6 +95,16 @@ func newDBSCANClusterer(minpts int, eps float64, workers int, distance DistFunc,
 	}, nil
 }
 
+// Returns the list of faceID's that were discovered whilst saving the information.
+func DBScanFaces(i any) (faces []string) {
+	switch v := i.(type) {
+	case dbscanClusterer:
+		return v.faces
+	default:
+		return nil
+	}
+}
+
 func (c *dbscanClusterer) IsOnline() bool {
 	return false
 }
@@ -118,6 +131,7 @@ func (c *dbscanClusterer) Learn(data [][]float64) error {
 	c.a = make([]int, c.l)
 	c.b = make([]int, 0)
 	c.loggedAt = time.Time{}
+	c.faces = make([]string, 0)
 
 	c.startNearestWorkers()
 
@@ -219,7 +233,10 @@ func (c *dbscanClusterer) run() {
 						result = append(result, c.d[ri])
 					}
 				}
-				c.savef(result)
+				faceID := c.savef(result)
+				if faceID != "" {
+					c.faces = append(c.faces, faceID)
+				}
 			}
 			c.logf(c.a[i], c.b[m])
 

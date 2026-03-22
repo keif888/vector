@@ -24,6 +24,7 @@ import (
 func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logrus.Logger) (err error) {
 	start := time.Now()
 	postgresLimit := 15
+	qdrantLimit := 15
 	elapsed := time.Now()
 	if bruteForce {
 		// 9s for 5k from MariaDB
@@ -73,30 +74,49 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 			log.Debugf("ClusterNew: found no new clusters")
 		}
 
-		results := make([]Embeddings, len(sizes))
-
-		for i := range sizes {
-			results[i] = make(Embeddings, 0, sizes[i])
+		log.Infof("ClusterNew: found the following faces %+v", alg.DBScanFaces(c))
+		var added Faces
+		if err = dbms.Db().Model(Face{}).Where("ID in (?)", alg.DBScanFaces(c)).Find(added).Error; err != nil {
+			log.Errorf("ClusterNew: select added faces failed with %s", err)
+			return err
 		}
 
-		guesses := c.Guesses()
+		if n := len(added); n > 0 {
+			log.Infof("faces: added %d new faces [%s]", n, time.Since(start))
+		} else {
+			log.Debugf("faces: found no new faces [%s]", time.Since(start))
+		}
+		// In theory at this point we have the added faces in added.
+		// And the func (w *Faces) Cluster(opt FacesOptions) (added entity.Faces, err error) has been replicated
+		// with on the fly save capability.
 
-		for i, n := range guesses {
-			if n < 1 {
-				continue
+		// Just need to call the next steps to save everything off.
+
+		/*
+			results := make([]Embeddings, len(sizes))
+
+			for i := range sizes {
+				results[i] = make(Embeddings, 0, sizes[i])
 			}
 
-			results[n-1] = append(results[n-1], embeddings[i])
-		}
+			guesses := c.Guesses()
 
-		for _, n := range guesses {
-			if n < 1 {
-				continue
+			for i, n := range guesses {
+				if n < 1 {
+					continue
+				}
+
+				results[n-1] = append(results[n-1], embeddings[i])
 			}
 
-			log.Infof("len results[%d] = %d", n-1, len(results[n-1]))
-		}
+			for _, n := range guesses {
+				if n < 1 {
+					continue
+				}
 
+				log.Infof("len results[%d] = %d", n-1, len(results[n-1]))
+			}
+		*/
 		// Skipping the face creation process.
 		/*
 			start := time.Now()
@@ -196,7 +216,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				faceEmbedding := unclustered[currentMarker]
 				score := float32(ClusterDist)
 				// ToDo: Add retry if 15 are found, like the Postgres code.
-				limit := uint64(15) // down from 2000000
+				limit := uint64(qdrantLimit) // down from 2000000
 				matchdb = time.Now()
 				if results, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 					CollectionName: VectorMarker{}.TableName(),
@@ -236,32 +256,58 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					for _, result := range results {
 						markerFound := result.Payload["UID"].GetStringValue()
 						pointIDs = append(pointIDs, result.Id)
-						delete(unclustered, markerFound)
+						if markerFound != currentMarker || (len(results) != qdrantLimit && markerFound == currentMarker) {
+							delete(unclustered, markerFound)
+						} else {
+							log.Debugf("clusternew: qdrant will retry %s", currentMarker)
+						}
 					}
 
-					if updateDB {
-						startdb = time.Now()
-						s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
-						faceID := base32.StdEncoding.EncodeToString(s[:])
-						if len(pointIDs) == 1 {
-							faceID = ""
-						}
+					if len(results) == 0 {
+						delete(unclustered, currentMarker)
+						log.Debugf("clusternew: no records found for %s", currentMarker)
+					} else {
+						if updateDB {
+							startdb = time.Now()
+							if _, ok := clusters[currentMarker]; !ok && len(pointIDs) < ClusterCore {
+								request := &qdrant.SetPayloadPoints{
+									CollectionName: VectorMarker{}.TableName(),
+									Payload: qdrant.NewValueMap(map[string]any{
+										"Clustered": true,
+									},
+									),
+									PointsSelector: qdrant.NewPointsSelector(pointIDs...),
+								}
 
-						request := &qdrant.SetPayloadPoints{
-							CollectionName: VectorMarker{}.TableName(),
-							Payload: qdrant.NewValueMap(map[string]any{
-								"FaceID":    faceID,
-								"Clustered": true,
-							},
-							),
-							PointsSelector: qdrant.NewPointsSelector(pointIDs...),
-						}
+								if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
+									log.Errorf("ClusterNew: update failed with err %s", err)
+									return err
+								}
+							} else {
 
-						if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
-							log.Errorf("ClusterNew: update failed with err %s", err)
-							return err
+								s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
+								faceID := base32.StdEncoding.EncodeToString(s[:])
+								if len(pointIDs) == 1 {
+									faceID = ""
+								}
+
+								request := &qdrant.SetPayloadPoints{
+									CollectionName: VectorMarker{}.TableName(),
+									Payload: qdrant.NewValueMap(map[string]any{
+										"FaceID":    faceID,
+										"Clustered": true,
+									},
+									),
+									PointsSelector: qdrant.NewPointsSelector(pointIDs...),
+								}
+
+								if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
+									log.Errorf("ClusterNew: update failed with err %s", err)
+									return err
+								}
+							}
+							dbTime += time.Since(startdb)
 						}
-						dbTime += time.Since(startdb)
 					}
 				}
 			}
@@ -763,14 +809,16 @@ func Float64ToEmbeddings(f [][]float64) (result Embeddings) {
 
 // SaveLearnResult saves the face that was found.  But it doesn't allow a restart of clustering from the crash point.
 // ToDo: Update the Clustered flag on the Marker.  The issue, how do we determine which marker we were playing with?
-func SaveLearnResult(f [][]float64) {
+func SaveLearnResult(f [][]float64) (faceID string) {
 	cluster := Float64ToEmbeddings(f)
+	faceID = ""
 
 	if f := NewFace("", SrcAuto, cluster); f == nil {
 		log.Errorf("faces: face must not be nil - you may have found a bug")
 	} else if f.SkipMatching() {
 		log.Infof("faces: skipped cluster %s, embedding not distinct enough", f.ID)
 	} else if err := f.Create(); err == nil {
+		faceID = f.ID
 		// added = append(added, *f)
 		log.Debugf("faces: added cluster %s based on %s, radius %f", f.ID, english.Plural(f.Samples, "sample", "samples"), f.SampleRadius)
 	} else if err = f.Updates(Values{"updated_at": time.Now()}); err != nil {
@@ -778,7 +826,7 @@ func SaveLearnResult(f [][]float64) {
 	} else {
 		log.Debugf("faces: updated cluster %s", f.ID)
 	}
-
+	return
 }
 
 // SkipMatching checks whether the face should be skipped when matching.
