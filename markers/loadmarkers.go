@@ -99,12 +99,12 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 		}
 
 		if DistanceEquation(equation) == Distance_Cosine {
-			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_cosine_ops) WITH (m=8)").Error; err != nil {
+			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_cosine_ops) WITH (m=16, ef_construction=100)").Error; err != nil {
 				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
 				return err
 			}
 		} else if DistanceEquation(equation) == Distance_Euclidean {
-			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_l2_ops) WITH (m=8)").Error; err != nil {
+			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_l2_ops) WITH (m=16, ef_construction=100)").Error; err != nil {
 				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
 				return err
 			}
@@ -168,6 +168,11 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 
 		if err = dbms.QClient().CreateCollection(context.Background(), &qdrant.CreateCollection{
 			CollectionName: VectorMarker{}.TableName(),
+			HnswConfig: &qdrant.HnswConfigDiff{
+				M:                 qdrant.PtrOf(uint64(16)),    // 16 default (in .yaml file)
+				EfConstruct:       qdrant.PtrOf(uint64(100)),   // 100 default (in .yaml file)
+				FullScanThreshold: qdrant.PtrOf(uint64(10000)), // 0 means that it will always use the index.  10,000 default (in .yaml file)
+			},
 			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
 				Size: 512,
 				// Distance: qdrant.Distance_Cosine,
@@ -182,7 +187,6 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 			log.Errorf("LoadMarkers: CreateCollection failed with %s", err)
 			return err
 		}
-
 		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
 			CollectionName: VectorMarker{}.TableName(),
 			FieldName:      "UID",
@@ -193,10 +197,50 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 		}
 		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
 			CollectionName: VectorMarker{}.TableName(),
+			FieldName:      "FileUID",
+			FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateFieldIndex FileUID failed with %s", err)
+			return err
+		}
+		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: VectorMarker{}.TableName(),
+			FieldName:      "SubjUID",
+			FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateFieldIndex SubjUID failed with %s", err)
+			return err
+		}
+		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: VectorMarker{}.TableName(),
+			FieldName:      "SubjSrc",
+			FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateFieldIndex SubjSrc failed with %s", err)
+			return err
+		}
+		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: VectorMarker{}.TableName(),
 			FieldName:      "FaceID",
 			FieldType:      qdrant.FieldType_FieldTypeKeyword.Enum(),
 		}); err != nil {
 			log.Errorf("LoadMarkers: CreateFieldIndex FaceID failed with %s", err)
+			return err
+		}
+		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: VectorMarker{}.TableName(),
+			FieldName:      "MatchedAt",
+			FieldType:      qdrant.FieldType_FieldTypeDatetime.Enum(),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateFieldIndex MatchedAt failed with %s", err)
+			return err
+		}
+		if _, err = dbms.QClient().CreateFieldIndex(context.Background(), &qdrant.CreateFieldIndexCollection{
+			CollectionName: VectorMarker{}.TableName(),
+			FieldName:      "Clustered",
+			FieldType:      qdrant.FieldType_FieldTypeBool.Enum(),
+		}); err != nil {
+			log.Errorf("LoadMarkers: CreateFieldIndex Clustered failed with %s", err)
 			return err
 		}
 
