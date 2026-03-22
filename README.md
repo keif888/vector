@@ -75,6 +75,7 @@ Using the eculidean equation returns the same results from all products.
 1. Qdrant supports a single metric per collection, so you can NOT change the equation between Cosine and Euclidean on the fly.  Requires a complete reload.
 1. SQLite-vec using "match" uses the eculidean equation, and it can not be configured.
 1. Qdrant can NOT update a key:value pair to key:NULL.  It just deletes the key:value pair combination.
+1. Postgres pgvector is not reliable.  When clustering 5k of records, some markers don't find anything (and they should find themselves at least). 1 to 15 markers not working.  Not predicatable.  Index build parameters and query settings changed, and working on 5k and 25k tests.   
 
 
 ```
