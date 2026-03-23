@@ -217,8 +217,8 @@ func QueryMarkers(dataSourceName dsn.DSN, markerUID string, equation int, log *l
 			}
 		*/
 		var score float32
-		score = float32(0.9999995)
-		limit := uint64(10)
+		score = float32(0.64)
+		limit := uint64(15)
 		// Return up to 10 results, with full data
 		if result, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 			CollectionName: VectorMarker{}.TableName(),
@@ -227,8 +227,21 @@ func QueryMarkers(dataSourceName dsn.DSN, markerUID string, equation int, log *l
 			// Query:          qdrant.NewQueryID(qdrant.NewIDNum(336)), // 3 results (missing 336)
 			Limit:          &limit,
 			ScoreThreshold: &score,
-			WithPayload:    qdrant.NewWithPayload(true),
-			WithVectors:    qdrant.NewWithVectors(true),
+			Filter: &qdrant.Filter{
+				Must: []*qdrant.Condition{
+					qdrant.NewMatch("Type", MarkerFace),
+					qdrant.NewMatchBool("Invalid", false),
+					qdrant.NewRange("Size", &qdrant.Range{
+						Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
+					}),
+					qdrant.NewRange("Score", &qdrant.Range{
+						Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
+					}),
+					qdrant.NewMatch("FaceID", ""),
+				},
+			},
+			WithPayload: qdrant.NewWithPayload(true),
+			WithVectors: qdrant.NewWithVectors(true),
 		}); err != nil {
 			log.Errorf("QueryMarkers: Query of Id=336 failed with %s", err)
 			return err
