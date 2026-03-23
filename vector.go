@@ -50,7 +50,7 @@ func main() {
 	dbms.SetLog(log)
 	markers.SetLog(log)
 
-	flag.StringVar(&action, "action", "gencsv", "Take one of the following actions gencsv, loadcsv, cluster, query, match, reset")
+	flag.StringVar(&action, "action", "gencsv", "Take one of the following actions gencsv, loadcsv, cluster, clusterv2, query, match, reset")
 	flag.StringVar(&fileName, "filename", "", "The name of the CSV file to generate or load")
 	flag.BoolVar(&force, "overwrite", false, "Overwrite the csv file?")
 	flag.IntVar(&numberOfMarkers, "markers", 100, "Number of markers to generate")
@@ -118,6 +118,20 @@ func main() {
 		}
 		if err := markers.ClusterNew(d, equation, bruteForce, log); err != nil {
 			flagErrorAndExit("Cluster failed with %s", err)
+		}
+	case "clusterv2":
+		if _, ok := dsn.Params[driver]; !ok {
+			flagErrorAndExit("driver %v is not valid", driver)
+		}
+		d, s := dsn.Parse(dsnString)
+		if !s {
+			flagErrorAndExit("dsn %s failed to parse", dsnString)
+		}
+		if d.Driver != strings.ToLower(driver) {
+			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
+		}
+		if err := markers.ClusterNewV2(d, equation, bruteForce, log); err != nil {
+			flagErrorAndExit("Cluster v2 failed with %s", err)
 		}
 	case "query":
 		if _, ok := dsn.Params[driver]; !ok {
