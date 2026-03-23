@@ -44,7 +44,10 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 			return fmt.Errorf("driver %s is not supported for current mode", dataSourceName.Driver)
 		}
 
-		dbms.Db().AutoMigrate(&Face{})
+		if err = dbms.Db().AutoMigrate(&Face{}); err != nil {
+			log.Errorf("ClusterNew: AutoMigrate Face failed with %s", err)
+			return err
+		}
 
 		// Fetch unclustered face embeddings.
 		embeddings, err := QueryEmbeddings(false, true, ClusterSizeThreshold, ClusterScoreThreshold)
@@ -74,9 +77,8 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 			log.Debugf("ClusterNew: found no new clusters")
 		}
 
-		log.Infof("ClusterNew: found the following faces %+v", alg.DBScanFaces(c))
 		var added Faces
-		if err = dbms.Db().Model(Face{}).Where("ID in (?)", alg.DBScanFaces(c)).Find(added).Error; err != nil {
+		if err = dbms.Db().Model(Face{}).Where("ID in (?)", alg.DBScanFaces(c)).Find(&added).Error; err != nil {
 			log.Errorf("ClusterNew: select added faces failed with %s", err)
 			return err
 		}
@@ -820,13 +822,14 @@ func SaveLearnResult(f [][]float64) (faceID string) {
 	} else if err := f.Create(); err == nil {
 		faceID = f.ID
 		// added = append(added, *f)
-		log.Debugf("faces: added cluster %s based on %s, radius %f", f.ID, english.Plural(f.Samples, "sample", "samples"), f.SampleRadius)
+		// log.Debugf("faces: added cluster %s based on %s, radius %f", f.ID, english.Plural(f.Samples, "sample", "samples"), f.SampleRadius)
 	} else if err = f.Updates(Values{"updated_at": time.Now()}); err != nil {
 		log.Errorf("faces: %s", err)
 	} else {
 		log.Debugf("faces: updated cluster %s", f.ID)
 	}
-	return
+	// log.Infof("SaveLearnResult: faceID = %s", faceID)
+	return faceID
 }
 
 // SkipMatching checks whether the face should be skipped when matching.
