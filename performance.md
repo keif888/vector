@@ -36,6 +36,8 @@ This test uses Clustered bool to store whether a marker has been clustered (succ
 ## Clusterings
 
 ### Expected results
+These are the results from the set of random files that I generated.  
+
 5k expected results:  
 4953 unclustered faces  
 153 new clusters  
@@ -45,8 +47,8 @@ This test uses Clustered bool to store whether a marker has been clustered (succ
 850 new clusters  
 
 100k expected results:  
-tbd unclustered faces  
-tbd new clusters  
+99077 unclustered faces  
+3321 new clusters  
 
 ### Performance Stats 5k
 
@@ -139,12 +141,16 @@ Ran for 15m, stopped, and resized MariaDB bufferpool.  Processed 632 markers in 
 Restarted with 91054, and it's performing MUCH better, no longer IO bound...  Top showing mariadb 0.9 to 1.0 across 6 cores.  
 Rate is now ~20,000 markers per 15 minutes, which equates to < 1.5h to process 100k.  
 
+2nd Full Run with adjusted memory size:
+MariaDB Vector - 100k = 1h 19m 3.9s 99077/3321 clusters.  Top showing mariadb 0.8 to 1.0 across 6 cores.  
 
 MariaDB Go     - 100k =  32m 22.3s 99077/3321 clusters.  Top showing vector 2.8 to 2.95 across 6 cores.  
 
 
-Postgres Load   - 100k =  
-Postgres Vector - 100k =  
+Postgres Load   - 100k =  14m 58.9s
+Postgres Vector - 100k =  20m 2.2s 99077/3315 clusters.  (Top wasn't running)
+Using m=16, ef_construction=100 and SET hnsw.ef_search = 120;SET hnsw.iterative_scan = strict_order; still results in lots (1079) of "no record found", which indicates that the index isn't working again.  Having to retune for different numbers of records makes this not a feasible solution.
+
 Postgres Go     - 100k =  
 
 Not run as expected to take WAY to long  
@@ -152,5 +158,56 @@ SQLite Load   - 100k =
 SQLite Vector - 100k =  
 SQLite Go     - 100k =  
 
-Qdrant Load   - 100k =  
-Qdrant Vector - 100k =  
+Qdrant Load   - 100k =  1m 4.4s  +1m for optimisations to complete (indexing)  
+Qdrant Vector - 100k =  34m 26.3s 99077/3310 clusters.  Top showing qdrant 0.9 to 5.79 across 6 cores.  
+9506 "no record found" were returned.  
+
+Reload with ef_construction = 200.  
+Qdrant Load   - 100k =  47.5s  +1m for optimisations to complete (indexing)  
+Qdrant Vector - 100k =  52m 25.3s 99077/3319 clusters.  Top showing qdrant 0.9 to 5.79 across 6 cores.  
+1168 "no record found" were returned.  
+Running some of the "no record found" individually was able to find them.
+
+Patch with ef_construction = 260.  
+Qdrant Vector - 100k =   99077/3319 clusters.  Top showing qdrant 0.9 to 5.79 across 6 cores.  
+2072 "no record found" were returned.  
+
+
+
+# Clustering V2
+The clustering v2 is an implementation of the clustering algorithm used in PhotoPrism for the dbms'.  
+That means that it will keep looking for adjoining clusters until it can't find anymore.  
+
+## 5k clustering
+
+MariaDB Load   -  5k = 9.2s  
+MariaDB Vector -  5k = 56.7s  
+MariaDB Go     -  5k = 12.7s  
+
+Postgres Load   - 5k = 37.3s  
+Postgres Vector - 5k = 42.8s  
+Postgres Go     - 5k = 12.2s  
+
+
+SQLite Load   -   5k = 3.3s  
+SQLite Vector -   5k = 2m 52.3s  
+SQLite Go     -   5k = 14.6s  
+
+Qdrant Load   -   5k = 2.9s  
+Qdrant Vector -   5k = 1m 31.7s  
+
+
+## 25k clustering
+
+MariaDB Load    - 25k = 1m 9.8s  
+MariaDB Vector  - 25k = 12m 43.8s 24744/850.   Top showing mariadb 0.8 to 1.0 across 6 cores.  
+MariaDB Go      - 25k = 3m 15.3s 24744/850. Top showing vector 2.8 to 2.95 across 6 cores.  
+
+Postgres Load   - 25k =   
+Postgres Vector - 25k =   
+
+SQLite Load     - 25k =   
+SQLite Vector   - 25k =   
+
+Qdrant Load     - 25k =   
+Qdrant Vector   - 25k =   
