@@ -25,6 +25,18 @@ func ResetMatchData(dataSourceName dsn.DSN, log *logrus.Logger) (err error) {
 		}
 		defer db.Close()
 
+		if err := dbms.Db().AutoMigrate(&Face{}); err != nil {
+			log.Errorf("ResetMatchData: AutoMigrate Face failed with %s", err)
+			return err
+		}
+
+		if results, err := gorm.G[Face](dbms.Db()).Where("true = true").Delete(context.Background()); err != nil {
+			log.Errorf("ResetMatchData: Delete Face failed with %s", err)
+			return err
+		} else {
+			log.Infof("resetmatchdata: removed %d face records", results)
+		}
+
 		//updateMap := map[string]any{"clustered": false, "face_id": ""}
 
 		if results, err := gorm.G[any](dbms.Db()).Table(VectorMarker{}.TableName()).Where("clustered = true").Updates(context.Background(), map[string]any{"clustered": false, "face_id": ""}); err != nil {
