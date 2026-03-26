@@ -2,6 +2,7 @@
 package alg
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -98,9 +99,10 @@ func newDBSCANClusterer(minpts int, eps float64, workers int, distance DistFunc,
 // Returns the list of faceID's that were discovered whilst saving the information.
 func DBScanFaces(i any) (faces []string) {
 	switch v := i.(type) {
-	case dbscanClusterer:
+	case *dbscanClusterer:
 		return v.faces
 	default:
+		fmt.Printf("Unable to understand type %T\r\n", i)
 		return nil
 	}
 }
@@ -238,8 +240,6 @@ func (c *dbscanClusterer) run() {
 					c.faces = append(c.faces, faceID)
 				}
 			}
-			c.logf(c.a[i], c.b[m])
-
 			n++
 			m++
 		}
