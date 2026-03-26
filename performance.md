@@ -222,9 +222,15 @@ MariaDB Load   - 100k =  4m 28.3s
 MariaDB Vector - 100k = 1h 19m 3.9s 99077/3321 clusters.  Top showing mariadb 0.8 to 1.0 across 6 cores.  
 MariaDB Go     - 100k =  32m 22.3s 99077/3321 clusters.  Top showing vector 2.8 to 2.95 across 6 cores.  
 
+"m=16, ef_construction=100", keep SET hnsw.ef_search = 120;SET hnsw.iterative_scan = strict_order;
 Postgres Load   - 100k =  14m 58.9s
 Postgres Vector - 100k =  20m 2.2s 99077/3315 clusters.  (top wasn't running) This is a FAIL!  
 Postgres Go     - 100k =  
+
+"m=24, ef_construction=320" with SET hnsw.ef_search = 120;SET hnsw.iterative_scan = strict_order;  
+Postgres Load   - 100k =  30m 52.9s  
+Postgres Vector - 100k =  
+
 
 Not run as expected to take WAY to long  
 SQLite Load   - 100k =  
@@ -280,6 +286,11 @@ SQLite Vector   - 25k = 49m 45.3s 24744/850.  Top showing vector 0.9 to 1.0 acro
 
 Qdrant Load     - 25k = 10.7s  
 Qdrant Vector   - 25k = 27m 50.6s 24744/850. Top showing qdrant 2.8 to 2.95 across 6 cores.  
+
+Qdrant parameters m=16, ef_construction=500, full_scan_threshold=10000
+Qdrant Load     - 25k = 10.8s  
+Qdrant Vector   - 25k = 27m 50.6s 24744/850. Top showing qdrant 2.8 to 2.95 across 6 cores.  
+
 
 ## 100k clustering
 
