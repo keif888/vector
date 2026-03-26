@@ -169,8 +169,8 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 		if err = dbms.QClient().CreateCollection(context.Background(), &qdrant.CreateCollection{
 			CollectionName: VectorMarker{}.TableName(),
 			HnswConfig: &qdrant.HnswConfigDiff{
-				M:                 qdrant.PtrOf(uint64(24)),    // 16 default (in .yaml file)
-				EfConstruct:       qdrant.PtrOf(uint64(320)),   // 100 default (in .yaml file).  200 is balanced build in Qdrant essentials, 320 = 16*20
+				M:                 qdrant.PtrOf(uint64(16)),    // 16 default (in .yaml file)
+				EfConstruct:       qdrant.PtrOf(uint64(500)),   // 100 default (in .yaml file).  200 is balanced build in Qdrant essentials, 320 = 16*20
 				FullScanThreshold: qdrant.PtrOf(uint64(10000)), // 0 means that it will always use the index.  10,000 default (in .yaml file)
 			},
 			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
