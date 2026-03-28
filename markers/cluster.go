@@ -26,7 +26,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 	postgresLimit := 15
 	qdrantLimit := 15
 	elapsed := time.Now()
-	if bruteForce {
+	if bruteForce && dataSourceName.Driver != dsn.DriverQdrant {
 		// 9s for 5k from MariaDB
 		// 15s to get source for 25k records from MariaDB
 		// 4m13.650403896s to cluster 25k records with 834 new clusters found, with high CPU entire time.
@@ -162,7 +162,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 
 			unclustered := map[string]Embedding32{}
 			clusters := map[string]string{}
-			updateDB := true
+			updateDB := false
 			offset := uint64(0)
 
 			allRead := false
@@ -206,9 +206,13 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 			log.Infof("ClusterNew: found %d unclustered markers", len(unclustered))
 
 			for len(unclustered) != 0 {
-				if time.Since(elapsed) > time.Minute*15 {
+				if time.Since(elapsed) > time.Minute*5 {
 					elapsed = time.Now()
-					log.Infof("ClusterNew: %d remaining", len(unclustered))
+					if len(unclustered) < 10 {
+						log.Infof("ClusterNew: %d remaining %+v", len(unclustered), unclustered)
+					} else {
+						log.Infof("ClusterNew: %d remaining", len(unclustered))
+					}
 				}
 				currentMarker := ""
 				for markerUID := range unclustered {
@@ -219,29 +223,60 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				score := float32(ClusterDist)
 				// ToDo: Add retry if 15 are found, like the Postgres code.
 				limit := uint64(qdrantLimit) // down from 2000000
+				hnswef := uint64(120)
 				matchdb = time.Now()
-				if results, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
-					CollectionName: VectorMarker{}.TableName(),
-					Query:          qdrant.NewQueryDense(faceEmbedding),
-					Filter: &qdrant.Filter{
-						Must: []*qdrant.Condition{
-							qdrant.NewMatch("Type", MarkerFace),
-							qdrant.NewMatchBool("Invalid", false),
-							qdrant.NewRange("Size", &qdrant.Range{
-								Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
-							}),
-							qdrant.NewRange("Score", &qdrant.Range{
-								Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
-							}),
-							qdrant.NewMatch("FaceID", ""),
-							qdrant.NewMatchBool("Clustered", false),
-						},
-					},
-					Limit:          &limit,
-					ScoreThreshold: &score,
-					WithPayload:    qdrant.NewWithPayload(true),
-					WithVectors:    qdrant.NewWithVectors(false),
-				}); err != nil {
+				var results []*qdrant.ScoredPoint
+				if bruteForce {
+					results, err = dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+						CollectionName: VectorMarker{}.TableName(),
+						Query:          qdrant.NewQueryDense(faceEmbedding),
+						// Filter: &qdrant.Filter{
+						// 	Must: []*qdrant.Condition{
+						// 		qdrant.NewMatch("Type", MarkerFace),
+						// 		qdrant.NewMatchBool("Invalid", false),
+						// 		qdrant.NewRange("Size", &qdrant.Range{
+						// 			Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
+						// 		}),
+						// 		qdrant.NewRange("Score", &qdrant.Range{
+						// 			Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
+						// 		}),
+						// 		qdrant.NewMatch("FaceID", ""),
+						// 		qdrant.NewMatchBool("Clustered", false),
+						// 	},
+						// },
+						Limit:          &limit,
+						ScoreThreshold: &score,
+						WithPayload:    qdrant.NewWithPayload(true),
+						WithVectors:    qdrant.NewWithVectors(false),
+						Params:         &qdrant.SearchParams{HnswEf: &hnswef},
+					})
+				} else {
+					results, err = dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+						CollectionName: VectorMarker{}.TableName(),
+						Query:          qdrant.NewQueryDense(faceEmbedding),
+						// Filter: &qdrant.Filter{
+						// 	Must: []*qdrant.Condition{
+						// 		// qdrant.NewMatch("Type", MarkerFace),
+						// 		// qdrant.NewMatchBool("Invalid", false),
+						// 		qdrant.NewRange("Size", &qdrant.Range{
+						// 			Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
+						// 		}),
+						// 		qdrant.NewRange("Score", &qdrant.Range{
+						// 			Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
+						// 		}),
+						// 		// qdrant.NewMatch("FaceID", ""),
+						// 		// qdrant.NewMatchBool("Clustered", false),
+						// 	},
+						// },
+						Limit:          &limit,
+						ScoreThreshold: &score,
+						WithPayload:    qdrant.NewWithPayload(true),
+						WithVectors:    qdrant.NewWithVectors(false),
+						// Params:         &qdrant.SearchParams{HnswEf: &hnswef},
+						// Very Slow!!! Params: &qdrant.SearchParams{Exact: qdrant.PtrOf(true)},
+					})
+				}
+				if err != nil {
 					log.Errorf("QueryMarkers: Query for matches failed with %s", err)
 					return err
 				} else {
@@ -249,20 +284,33 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					matchCount++
 					pointIDs := []*qdrant.PointId{}
 
-					ej, _ := json.Marshal(faceEmbedding)
-					if len(results) >= ClusterCore {
-						clusterCount++
-						clusters[currentMarker] = string(ej)
-					}
-
+					found := 0
 					for _, result := range results {
 						markerFound := result.Payload["UID"].GetStringValue()
+
+						if int64(result.Payload["Score"].GetDoubleValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetDoubleValue()) >= int64(ClusterSizeThreshold) {
+							found++
+						}
 						pointIDs = append(pointIDs, result.Id)
 						if markerFound != currentMarker || (len(results) != qdrantLimit && markerFound == currentMarker) {
 							delete(unclustered, markerFound)
 						} else {
 							log.Debugf("clusternew: qdrant will retry %s", currentMarker)
 						}
+					}
+
+					ej, _ := json.Marshal(faceEmbedding)
+					if found >= ClusterCore {
+						clusterCount++
+						clusters[currentMarker] = string(ej)
+					}
+
+					// Sometimes the currentMarker isn't removed.
+					if len(results) < qdrantLimit && len(results) > 0 {
+						if _, ok := unclustered[currentMarker]; ok {
+							log.Debugf("clusternew: records found, but expected %s was not", currentMarker)
+						}
+						delete(unclustered, currentMarker)
 					}
 
 					if len(results) == 0 {

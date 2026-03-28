@@ -23,7 +23,7 @@ func ClusterNewV2(dataSourceName dsn.DSN, equation int, bruteForce bool, log *lo
 	postgresLimit := 15
 	qdrantLimit := 15
 	elapsed := time.Now()
-	if bruteForce {
+	if bruteForce && dataSourceName.Driver != dsn.DriverQdrant {
 		var db *dbms.DbConn
 		switch dataSourceName.Driver {
 		case dsn.DriverSQLite3, dsn.DriverMySQL, dsn.DriverPostgres:
@@ -159,7 +159,7 @@ func ClusterNewV2(dataSourceName dsn.DSN, equation int, bruteForce bool, log *lo
 				limit := uint64(qdrantLimit) // down from 2000000
 				matchdb = time.Now()
 				matches := make(qdrantResults, 0)
-				if err := matches.QdrantQueryMatches(faceEmbedding, limit, score); err != nil {
+				if err := matches.QdrantQueryMatches(faceEmbedding, limit, score, bruteForce); err != nil {
 					log.Errorf("ClusterNewV2: Query for matches failed with %s", err)
 					return err
 				} else {
@@ -184,7 +184,7 @@ func ClusterNewV2(dataSourceName dsn.DSN, equation int, bruteForce bool, log *lo
 							if _, ok := unclustered[matches[i].MarkerUID]; ok {
 								matchdb = time.Now()
 								newMatch := matches
-								if err := newMatch.QdrantQueryMatches(unclustered[matches[i].MarkerUID], limit, score); err != nil {
+								if err := newMatch.QdrantQueryMatches(unclustered[matches[i].MarkerUID], limit, score, bruteForce); err != nil {
 									log.Errorf("ClusterNewV2: Query for matches failed with %s", err)
 									return err
 								}
@@ -214,43 +214,46 @@ func ClusterNewV2(dataSourceName dsn.DSN, equation int, bruteForce bool, log *lo
 					} else {
 						if updateDB {
 							startdb = time.Now()
-							if _, ok := clusters[currentMarker]; !ok && len(pointIDs) < ClusterCore {
-								request := &qdrant.SetPayloadPoints{
-									CollectionName: VectorMarker{}.TableName(),
-									Payload: qdrant.NewValueMap(map[string]any{
-										"Clustered": true,
-									},
-									),
-									PointsSelector: qdrant.NewPointsSelector(pointIDs...),
-								}
+							/*
+								// Commented out updates to Qdrant to see if this prevents the optimisation being triggered.
+								if _, ok := clusters[currentMarker]; !ok && len(pointIDs) < ClusterCore {
+									request := &qdrant.SetPayloadPoints{
+										CollectionName: VectorMarker{}.TableName(),
+										Payload: qdrant.NewValueMap(map[string]any{
+											"Clustered": true,
+										},
+										),
+										PointsSelector: qdrant.NewPointsSelector(pointIDs...),
+									}
 
-								if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
-									log.Errorf("ClusterNew: update failed with err %s", err)
-									return err
-								}
-							} else {
+									if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
+										log.Errorf("ClusterNew: update failed with err %s", err)
+										return err
+									}
+								} else {
 
-								s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
-								faceID := base32.StdEncoding.EncodeToString(s[:])
-								if len(pointIDs) == 1 {
-									faceID = ""
-								}
+									s := sha1.Sum(ej) //nolint:gosec // G401: Stable identifier hash; not used for security decisions.
+									faceID := base32.StdEncoding.EncodeToString(s[:])
+									if len(pointIDs) == 1 {
+										faceID = ""
+									}
 
-								request := &qdrant.SetPayloadPoints{
-									CollectionName: VectorMarker{}.TableName(),
-									Payload: qdrant.NewValueMap(map[string]any{
-										"FaceID":    faceID,
-										"Clustered": true,
-									},
-									),
-									PointsSelector: qdrant.NewPointsSelector(pointIDs...),
-								}
+									request := &qdrant.SetPayloadPoints{
+										CollectionName: VectorMarker{}.TableName(),
+										Payload: qdrant.NewValueMap(map[string]any{
+											"FaceID":    faceID,
+											"Clustered": true,
+										},
+										),
+										PointsSelector: qdrant.NewPointsSelector(pointIDs...),
+									}
 
-								if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
-									log.Errorf("ClusterNew: update failed with err %s", err)
-									return err
+									if _, err = dbms.QClient().SetPayload(context.Background(), request); err != nil {
+										log.Errorf("ClusterNew: update failed with err %s", err)
+										return err
+									}
 								}
-							}
+							*/
 							dbTime += time.Since(startdb)
 						}
 					}
@@ -423,26 +426,29 @@ type qdrantResult struct {
 type qdrantResults []qdrantResult
 
 // QdrantQueryMatches attempts to return all the MarkerUID's and PointID's that are found when querying for faceEmbedding
-func (matches *qdrantResults) QdrantQueryMatches(faceEmbedding []float32, limit uint64, score float32) (err error) {
+func (matches *qdrantResults) QdrantQueryMatches(faceEmbedding []float32, limit uint64, score float32, bruteForce bool) (err error) {
 	if matches == nil {
 		return fmt.Errorf("QdrantQueryMatches: matches must not be nil")
 	}
 	allRead := false
 	for !allRead {
-		filter := &qdrant.Filter{
-			Must: []*qdrant.Condition{
-				qdrant.NewMatch("Type", MarkerFace),
-				qdrant.NewMatchBool("Invalid", false),
-				qdrant.NewRange("Size", &qdrant.Range{
-					Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
-				}),
-				qdrant.NewRange("Score", &qdrant.Range{
-					Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
-				}),
-				qdrant.NewMatch("FaceID", ""),
-				qdrant.NewMatchBool("Clustered", false),
-			},
-		}
+		filter := &qdrant.Filter{}
+		// if !bruteForce {
+		// 	filter = &qdrant.Filter{
+		// 		Must: []*qdrant.Condition{
+		// 			//					qdrant.NewMatch("Type", MarkerFace),
+		// 			//					qdrant.NewMatchBool("Invalid", false),
+		// 			qdrant.NewRange("Size", &qdrant.Range{
+		// 				Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
+		// 			}),
+		// 			qdrant.NewRange("Score", &qdrant.Range{
+		// 				Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
+		// 			}),
+		// 			// qdrant.NewMatch("FaceID", ""),
+		// 			// qdrant.NewMatchBool("Clustered", false),
+		// 		},
+		// 	}
+		// }
 		if len(*matches) > 0 {
 			var p []*qdrant.PointId
 			p = make([]*qdrant.PointId, 0)
@@ -453,8 +459,9 @@ func (matches *qdrantResults) QdrantQueryMatches(faceEmbedding []float32, limit 
 				qdrant.NewHasID(p...),
 			}
 		}
-
-		if results, err := dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
+		// hnswef := uint64(120)
+		var results []*qdrant.ScoredPoint
+		results, err = dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 			CollectionName: VectorMarker{}.TableName(),
 			Query:          qdrant.NewQueryDense(faceEmbedding),
 			Filter:         filter,
@@ -462,14 +469,18 @@ func (matches *qdrantResults) QdrantQueryMatches(faceEmbedding []float32, limit 
 			ScoreThreshold: &score,
 			WithPayload:    qdrant.NewWithPayload(true),
 			WithVectors:    qdrant.NewWithVectors(false),
-		}); err != nil {
+			//Params:         &qdrant.SearchParams{HnswEf: &hnswef},
+		})
+		if err != nil {
 			log.Errorf("QdrantQueryMatches: Query for matches failed with %s", err)
 			return err
 		} else {
 			// log.Debugf("%+v", results)
 			for _, result := range results {
-				found := qdrantResult{MarkerUID: result.Payload["UID"].GetStringValue(), PointID: result.Id}
-				*matches = append(*matches, found)
+				if int64(result.Payload["Score"].GetDoubleValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetDoubleValue()) >= int64(ClusterSizeThreshold) {
+					found := qdrantResult{MarkerUID: result.Payload["UID"].GetStringValue(), PointID: result.Id}
+					*matches = append(*matches, found)
+				}
 			}
 			if len(results) != int(limit) {
 				allRead = true
