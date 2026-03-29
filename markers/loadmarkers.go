@@ -19,6 +19,40 @@ import (
 
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
 func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *logrus.Logger) (err error) {
+	// markers := make([]VectorMarker, 1)
+	// faceEmbeddings := make([]VectorMarkerFace, 1)
+
+	// markers[0] = VectorMarker{
+	// 	MarkerUID:     "abcdef",
+	// 	FileUID:       "abcdef",
+	// 	MarkerType:    "face",
+	// 	MarkerSrc:     "csvRecord[3]",
+	// 	MarkerReview:  false,
+	// 	MarkerInvalid: false,
+	// 	SubjSrc:       "csvRecord[8]",
+	// 	FaceDist:      1.2,
+	// 	// EmbeddingsJSON: embeddings.JSON(),
+	// 	// Embedding:     DBEmbed{Embed: embedding},
+	// 	X:         1,
+	// 	Y:         2,
+	// 	W:         3,
+	// 	H:         4,
+	// 	Q:         5,
+	// 	Size:      6,
+	// 	Score:     7,
+	// 	CreatedAt: time.Now(),
+	// 	UpdatedAt: time.Now(),
+	// 	Clustered: false,
+	// }
+
+	// faceEmbeddings[0] = VectorMarkerFace{
+	// 	MarkerUID:   markers[0].MarkerUID,
+	// 	EmbeddingID: 0, // This is needed to support cases where there is more than 1 Embedding returned by the AI routines, but is out of scope for this
+	// 	Embedding:   DBEmbed{},
+	// }
+
+	// return createDBMSMarkers(dsn.Driver, 1, 1, &markers, &faceEmbeddings, log)
+
 	var db *dbms.DbConn
 	start := time.Now()
 	switch dsn.Driver {
@@ -471,6 +505,28 @@ func createDBMSMarkers(driver string, record, upto int, markers *[]VectorMarker,
 					log.Errorf("unable to unmashal(jsonBytes) %s", err)
 				}
 			}
+			payload = make(map[string]any)
+			payload["UID"] = v.MarkerUID
+			payload["Score"] = v.Score
+			payload["Size"] = v.Size
+			payload["Type"] = v.MarkerType
+			payload["Invalid"] = v.MarkerInvalid
+			payload["FaceID"] = v.FaceID
+			payload["Clustered"] = v.Clustered
+
+			// log.Debugf("%+v", payload)
+			// log.Debugf("%T", payload["Score"])
+			// log.Debugf("%T", payload["Size"])
+
+			// payload["Score"] = v.Score
+			// payload["Size"] = v.Size
+
+			// log.Debugf("%+v", payload)
+			// log.Debugf("%T", payload["Score"])
+			// log.Debugf("%T", payload["Size"])
+			// return fmt.Errorf("Forced Error %s", "Because I can")
+
+			// log.Debugf("%+v", qdrant.NewValueMap(payload))
 
 			points[i] = &qdrant.PointStruct{
 				Id:      qdrant.NewIDNum(uint64(upto + i)),

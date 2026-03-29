@@ -254,20 +254,20 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					results, err = dbms.QClient().Query(context.Background(), &qdrant.QueryPoints{
 						CollectionName: VectorMarker{}.TableName(),
 						Query:          qdrant.NewQueryDense(faceEmbedding),
-						// Filter: &qdrant.Filter{
-						// 	Must: []*qdrant.Condition{
-						// 		// qdrant.NewMatch("Type", MarkerFace),
-						// 		// qdrant.NewMatchBool("Invalid", false),
-						// 		qdrant.NewRange("Size", &qdrant.Range{
-						// 			Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
-						// 		}),
-						// 		qdrant.NewRange("Score", &qdrant.Range{
-						// 			Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
-						// 		}),
-						// 		// qdrant.NewMatch("FaceID", ""),
-						// 		// qdrant.NewMatchBool("Clustered", false),
-						// 	},
-						// },
+						Filter: &qdrant.Filter{
+							Must: []*qdrant.Condition{
+								// qdrant.NewMatch("Type", MarkerFace),
+								// qdrant.NewMatchBool("Invalid", false),
+								qdrant.NewRange("Size", &qdrant.Range{
+									Gte: qdrant.PtrOf(float64(ClusterSizeThreshold)),
+								}),
+								qdrant.NewRange("Score", &qdrant.Range{
+									Gte: qdrant.PtrOf(float64(ClusterScoreThreshold)),
+								}),
+								// qdrant.NewMatch("FaceID", ""),
+								// qdrant.NewMatchBool("Clustered", false),
+							},
+						},
 						Limit:          &limit,
 						ScoreThreshold: &score,
 						WithPayload:    qdrant.NewWithPayload(true),
@@ -287,8 +287,12 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					found := 0
 					for _, result := range results {
 						markerFound := result.Payload["UID"].GetStringValue()
+						// log.Debugf("%+v", result.Payload)
 
-						if int64(result.Payload["Score"].GetDoubleValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetDoubleValue()) >= int64(ClusterSizeThreshold) {
+						// if int64(result.Payload["Score"].GetDoubleValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetDoubleValue()) >= int64(ClusterSizeThreshold) {
+						// 	found++
+						// }
+						if int64(result.Payload["Score"].GetIntegerValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetIntegerValue()) >= int64(ClusterSizeThreshold) {
 							found++
 						}
 						pointIDs = append(pointIDs, result.Id)

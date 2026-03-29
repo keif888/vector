@@ -477,7 +477,8 @@ func (matches *qdrantResults) QdrantQueryMatches(faceEmbedding []float32, limit 
 		} else {
 			// log.Debugf("%+v", results)
 			for _, result := range results {
-				if int64(result.Payload["Score"].GetDoubleValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetDoubleValue()) >= int64(ClusterSizeThreshold) {
+				// if int64(result.Payload["Score"].GetDoubleValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetDoubleValue()) >= int64(ClusterSizeThreshold) {
+				if int64(result.Payload["Score"].GetIntegerValue()) >= int64(ClusterScoreThreshold) && int64(result.Payload["Size"].GetIntegerValue()) >= int64(ClusterSizeThreshold) {
 					found := qdrantResult{MarkerUID: result.Payload["UID"].GetStringValue(), PointID: result.Id}
 					*matches = append(*matches, found)
 				}
