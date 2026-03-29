@@ -75,7 +75,8 @@ Using the eculidean equation returns the same results from all products.
 1. Qdrant supports a single metric per collection, so you can NOT change the equation between Cosine and Euclidean on the fly.  Requires a complete reload.
 1. SQLite-vec using "match" uses the eculidean equation, and it can not be configured.
 1. Qdrant can NOT update a key:value pair to key:NULL.  It just deletes the key:value pair combination.
-1. Qdrant and Postgres need tuning of the index parameters to get the desired level of accuracy.  As more vectors are added the settings have needed further adjustments.
+1. Qdrant and Postgres need tuning of the index parameters to get the desired level of accuracy.  As more vectors are added the settings have needed further adjustments.  
+1. Qdrant with 100k record set goes into optimising mode as the updates to the payload are sent through.  Although the updated fields are no longer in the index, they are still triggering the optimise, which flat lines the CPUs.  
 
 
 ```
