@@ -291,6 +291,8 @@ Qdrant parameters m=16, ef_construction=500, full_scan_threshold=10000
 Qdrant Load     - 25k = 10.8s  
 Qdrant Vector   - 25k = 27m 50.6s 24744/850. Top showing qdrant 2.8 to 2.95 across 6 cores.  
 
+Qdrant parameters m=16, ef_construction=500, full_scan_threshold=10000, Query HnswEf=120, and Filters to only Size and Score.  
+Qdrant Vector   - 25k = 3m 52.5s 24744/850.  
 
 ## 100k clustering
 
@@ -319,3 +321,11 @@ Postgres Vector - 100k = 18m 30.3s 99077/3321. Top showing postgres 0.8 to 1.0 a
 Qdrant Load     - 100k = 54.5s, +1m for optimisations to complete (indexing)  
 Qdrant Vector   - 100k = 3h 49m 28.5s 99077/3320. Top showing qdrant 0.8 to 2.95 across 6 cores.  
 Please note that there were 429 cases where Qdrant failed to find a match.  Every request should match at least 1 record.  
+
+Qdrant parameters m=16, ef_construction=500, full_scan_threshold=10000, Query HnswEf=120, and Filters to only Size and Score.  
+Qdrant Vector   - 100k = 18m 49.9s 99077/3321.  Update time was 52.1s of the total.  
+Please note that there was 1 case where Qdrant failed to find a match.  Every request should match at least 1 record.  
+
+Qdrant parameters m=16, ef_construction=500, full_scan_threshold=10000, Query HnswEf=120, and Filters to only Size and Score.  Updates disabled.  
+Qdrant Vector   - 100k = 6m 23.2s 99077/3321.  
+Please note that there was 7 cases where Qdrant failed to find a match.  Every request should match at least 1 record.  
