@@ -1,12 +1,14 @@
 package markers
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -204,7 +206,7 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 			CollectionName: VectorMarker{}.TableName(),
 			HnswConfig: &qdrant.HnswConfigDiff{
 				M:                 qdrant.PtrOf(uint64(16)),    // 16 default (in .yaml file)
-				EfConstruct:       qdrant.PtrOf(uint64(200)),   // 100 default (in .yaml file).  200 is balanced build in Qdrant essentials, 320 = 16*20
+				EfConstruct:       qdrant.PtrOf(uint64(400)),   // 100 default (in .yaml file).  200 is balanced build in Qdrant essentials, 320 = 16*20
 				FullScanThreshold: qdrant.PtrOf(uint64(10000)), // 0 means that it will always use the index.  10,000 default (in .yaml file)
 			},
 			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
@@ -322,7 +324,20 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 		}
 	}()
 
-	csvReader := csv.NewReader(csvFile)
+	var csvReader *csv.Reader
+	var gzipReader *gzip.Reader
+	if filepath.Ext(fileName) == ".gz" {
+		gzipReader, err = gzip.NewReader(csvFile)
+		if err != nil {
+			log.Errorf("LoadMarkers: unable to open required file %s with error %s", fileName, err)
+			return err
+		}
+		defer gzipReader.Close()
+		csvReader = csv.NewReader(gzipReader)
+	} else {
+		csvReader = csv.NewReader(csvFile)
+	}
+
 	markers := make([]VectorMarker, batchsize)
 	faceEmbeddings := make([]VectorMarkerFace, batchsize)
 	counter := 0

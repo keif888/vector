@@ -1,12 +1,15 @@
 package markers
 
 import (
+	"compress/gzip"
 	"encoding/csv"
 	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -21,6 +24,7 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 		return err
 	}
 	var csvFile *os.File
+	var clustersFile *os.File
 	if csvFile, err = os.Create(fileName); err != nil {
 		log.Errorf("generateMarkers: unable to create required file %s with error %s", fileName, err)
 		return err
@@ -31,8 +35,44 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 		}
 	}()
 
-	csvWriter := csv.NewWriter(csvFile)
-	defer csvWriter.Flush()
+	var csvWriter *csv.Writer
+	var gzipWriter *gzip.Writer
+	var clustersFileName string
+
+	if filepath.Ext(fileName) == ".gz" {
+		gzipWriter = gzip.NewWriter(csvFile)
+		csvWriter = csv.NewWriter(gzipWriter)
+		defer func() {
+			csvWriter.Flush()
+			if err := csvWriter.Error(); err != nil {
+				log.Errorf("generateMarkers: unable to flush file %s with error %s", fileName, err)
+			}
+			if err := gzipWriter.Close(); err != nil {
+				log.Errorf("generateMarkers: unable to flush file %s with error %s", fileName, err)
+			}
+		}()
+		ts := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+		clustersFileName = strings.TrimSuffix(ts, filepath.Ext(ts)) + ".clusters.txt"
+	} else {
+		csvWriter = csv.NewWriter(csvFile)
+		defer func() {
+			csvWriter.Flush()
+			if err := csvWriter.Error(); err != nil {
+				log.Errorf("generateMarkers: unable to flush file %s with error %s", fileName, err)
+			}
+		}()
+		clustersFileName = strings.TrimSuffix(fileName, filepath.Ext(fileName)) + ".clusters.txt"
+	}
+
+	if clustersFile, err = os.Create(clustersFileName); err != nil {
+		log.Errorf("generateMarkers: unable to create required file %s with error %s", clustersFileName, err)
+		return err
+	}
+	defer func() {
+		if err := clustersFile.Close(); err != nil {
+			log.Errorf("generateMarkers: unable to close file %s with error %s", clustersFileName, err)
+		}
+	}()
 
 	csvHeader := []string{"marker_uid", "file_uid", "marker_type", "marker_src", "marker_name", "marker_review", "marker_invalid", "subj_uid", "subj_src", "face_id", "face_dist", "embedding", "x", "y", "w", "h", "q", "size", "score", "thumb", "matched_at", "created_at", "updated_at", "clustered"}
 	if err := csvWriter.Write(csvHeader); err != nil {
@@ -57,6 +97,8 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 		sourceEmbeddings[i] = make(Embedding, 512)
 		copy(sourceEmbeddings[i], jsonembed)
 	}
+
+	clusters := map[int]string{}
 
 	for i := range numberOfMarkers {
 		if i%1000 == 0 && i > 0 {
@@ -125,7 +167,40 @@ func GenerateMarkers(fileName string, numberOfMarkers int, log *logrus.Logger) (
 			return err
 		}
 
+		if marker.Size >= ClusterSizeThreshold && marker.Score >= ClusterScoreThreshold {
+			if s, ok := clusters[faceNumber]; ok {
+				var b strings.Builder
+				b.WriteString(s)
+				b.WriteString(",")
+				b.WriteString(markerUID)
+				clusters[faceNumber] = b.String()
+			} else {
+				clusters[faceNumber] = markerUID
+			}
+		}
 	}
-	log.Infof("generateMarkers: wrote %d markers to %s", numberOfMarkers, fileName)
+
+	clusterCount := 0
+	for i := range numberOfFaces {
+		if result, ok := clusters[i]; ok {
+			mc := strings.Count(result, ",") + 1
+			if mc >= ClusterCore {
+				clusterCount++
+			}
+			ss := strings.Split(result, ",")
+			slices.Sort(ss)
+
+			if _, err := clustersFile.WriteString(strings.Join(ss, ",")); err != nil {
+				log.Errorf("generateMarkers: unable to write record %d to file %s with error %s", i, clustersFileName, err)
+				return err
+			}
+			if _, err := clustersFile.WriteString("\n"); err != nil {
+				log.Errorf("generateMarkers: unable to write newline record %d to file %s with error %s", i, clustersFileName, err)
+				return err
+			}
+		}
+	}
+
+	log.Infof("generateMarkers: wrote %d markers to %s with %d clusters", numberOfMarkers, fileName, clusterCount)
 	return nil
 }
