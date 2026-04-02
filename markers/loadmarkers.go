@@ -20,7 +20,7 @@ import (
 )
 
 // LoadMarkers retreives the saved markers from fileName and loads them into the table
-func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *logrus.Logger) (err error) {
+func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize, efConstruct, vectorM int, log *logrus.Logger) (err error) {
 	// markers := make([]VectorMarker, 1)
 	// faceEmbeddings := make([]VectorMarkerFace, 1)
 
@@ -70,12 +70,14 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 			return err
 		}
 		if DistanceEquation(equation) == Distance_Cosine {
-			if err = dbms.Db().Exec("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=8 DISTANCE=cosine").Error; err != nil {
+			stmt := fmt.Sprintf("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=%d DISTANCE=cosine", vectorM)
+			if err = dbms.Db().Exec(stmt).Error; err != nil {
 				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
 				return err
 			}
 		} else if DistanceEquation(equation) == Distance_Euclidean {
-			if err = dbms.Db().Exec("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=8 DISTANCE=euclidean").Error; err != nil {
+			stmt := fmt.Sprintf("ALTER TABLE `vector_marker_faces` ADD VECTOR INDEX (embedding) M=%d DISTANCE=euclidean", vectorM)
+			if err = dbms.Db().Exec(stmt).Error; err != nil {
 				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
 				return err
 			}
@@ -135,12 +137,14 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 		}
 
 		if DistanceEquation(equation) == Distance_Cosine {
-			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_cosine_ops) WITH (m=24, ef_construction=320)").Error; err != nil {
+			stmt := fmt.Sprintf("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_cosine_ops) WITH (m=%d, ef_construction=%d)", vectorM, efConstruct)
+			if err = dbms.Db().Exec(stmt).Error; err != nil {
 				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
 				return err
 			}
 		} else if DistanceEquation(equation) == Distance_Euclidean {
-			if err = dbms.Db().Exec("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_l2_ops) WITH (m=24, ef_construction=320)").Error; err != nil {
+			stmt := fmt.Sprintf("CREATE INDEX ON vector_marker_faces USING hnsw (embedding vector_l2_ops) WITH (m=%d, ef_construction=%d)", vectorM, efConstruct)
+			if err = dbms.Db().Exec(stmt).Error; err != nil {
 				log.Errorf("LoadMarkers: vector_marker_faces index setup failed with %s", err)
 				return err
 			}
@@ -205,9 +209,9 @@ func LoadMarkers(fileName string, dsn dsn.DSN, equation, batchsize int, log *log
 		if err = dbms.QClient().CreateCollection(context.Background(), &qdrant.CreateCollection{
 			CollectionName: VectorMarker{}.TableName(),
 			HnswConfig: &qdrant.HnswConfigDiff{
-				M:                 qdrant.PtrOf(uint64(16)),    // 16 default (in .yaml file)
-				EfConstruct:       qdrant.PtrOf(uint64(400)),   // 100 default (in .yaml file).  200 is balanced build in Qdrant essentials, 320 = 16*20
-				FullScanThreshold: qdrant.PtrOf(uint64(10000)), // 0 means that it will always use the index.  10,000 default (in .yaml file)
+				M:                 qdrant.PtrOf(uint64(vectorM)),     // 16 default (in .yaml file)
+				EfConstruct:       qdrant.PtrOf(uint64(efConstruct)), // 100 default (in .yaml file).  200 is balanced build in Qdrant essentials, 320 = 16*20
+				FullScanThreshold: qdrant.PtrOf(uint64(10000)),       // 0 means that it will always use the index.  10,000 default (in .yaml file)
 			},
 			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
 				Size: 512,

@@ -39,6 +39,9 @@ func main() {
 		equation        int
 		bruteForce      bool
 		batchSize       int
+		efConstruct     int
+		efQuery         int
+		vectorM         int
 	)
 
 	log = logrus.New()
@@ -61,6 +64,9 @@ func main() {
 	flag.IntVar(&equation, "equation", 1, "0 for cosine, 1 for eculidean")
 	flag.BoolVar(&bruteForce, "current", false, "Perform the request using the current way (not vector)")
 	flag.IntVar(&batchSize, "batchsize", 1000, "The size of a batch of records loaded in loadcsv")
+	flag.IntVar(&efConstruct, "efconstruction", 200, "The dynamic candidate size when constructing the graph in loadcsv")
+	flag.IntVar(&efQuery, "efquery", 128, "The dynamic candidate size when constructing the query in queries/clustering")
+	flag.IntVar(&vectorM, "m", 16, "The maximum number of connections when constructing the graph in loadcsv")
 	flag.Parse()
 
 	if equation < 0 && equation > 1 {
@@ -102,7 +108,7 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
-		if err := markers.LoadMarkers(fileName, d, equation, batchSize, log); err != nil {
+		if err := markers.LoadMarkers(fileName, d, equation, batchSize, efConstruct, vectorM, log); err != nil {
 			flagErrorAndExit("Generation failed with %s", err)
 		}
 	case "cluster":
@@ -116,7 +122,7 @@ func main() {
 		if d.Driver != strings.ToLower(driver) {
 			flagErrorAndExit("driver %s does not match %s from dsn %s failed to parse", driver, d.Driver, dsnString)
 		}
-		if err := markers.ClusterNew(d, equation, bruteForce, log); err != nil {
+		if err := markers.ClusterNew(d, equation, efQuery, bruteForce, log); err != nil {
 			flagErrorAndExit("Cluster failed with %s", err)
 		}
 	case "clusterv2":

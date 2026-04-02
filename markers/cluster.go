@@ -21,7 +21,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logrus.Logger) (err error) {
+func ClusterNew(dataSourceName dsn.DSN, equation, efQuery int, bruteForce bool, log *logrus.Logger) (err error) {
 	start := time.Now()
 	dbmsLimit := 15
 	elapsed := time.Now()
@@ -452,7 +452,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					whereStmt = "embedding <-> (select embedding from vector_marker_faces where marker_uid = ?) <= ?"
 				case dsn.DriverSQLite3:
 					selectStmt = "vec_distance_L2(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) as distance, vector_marker_faces.marker_uid"
-					whereStmt = "embedding match (select embedding from vector_marker_faces where marker_uid = ?) AND k = 1024 AND distance <= ?"
+					whereStmt = "embedding match (select embedding from vector_marker_faces where marker_uid = ?) AND k = ? AND distance <= ?"
 				default:
 					// How did we get here?
 					return fmt.Errorf("ClusterNew: dsn driver %s not recognised", dataSourceName.Driver)
@@ -462,7 +462,8 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 
 				switch dataSourceName.Driver {
 				case dsn.DriverPostgres:
-					if r := dbms.Db().Exec("SET hnsw.ef_search = 120;SET hnsw.iterative_scan = strict_order;"); r.Error != nil { //SET hnsw.ef_search = 120;
+					stmt := fmt.Sprintf("SET hnsw.ef_search = %d;SET hnsw.iterative_scan = strict_order;", efQuery)
+					if r := dbms.Db().Exec(stmt); r.Error != nil { //SET hnsw.ef_search = 120;
 						log.Errorf("ClusterNew: SETs failed with %s", r.Error)
 						return r.Error
 
@@ -477,6 +478,13 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 							"SELECT distance, marker_uid FROM face_match "+
 							"WHERE distance <= ? ORDER BY distance", currentMarker, MarkerFace, ClusterSizeThreshold, ClusterScoreThreshold, dbmsLimit, ClusterDist)
 				case dsn.DriverMySQL:
+					stmt := fmt.Sprintf("SET SESSION mhnsw_ef_search = %d;", efQuery)
+					if r := dbms.Db().Exec(stmt); r.Error != nil {
+						log.Errorf("ClusterNew: SETs failed with %s", r.Error)
+						return r.Error
+
+					}
+
 					query = dbms.Db().
 						Raw("WITH face_match AS ("+
 							"SELECT VEC_DISTANCE_EUCLIDEAN(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) as distance, vector_marker_faces.marker_uid "+
@@ -495,7 +503,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						Where("score >= ?", ClusterScoreThreshold).
 						Where("face_id = ''").
 						Where("clustered = false").
-						Where(whereStmt, currentMarker, ClusterDist).
+						Where(whereStmt, currentMarker, dbmsLimit, ClusterDist).
 						Select(selectStmt, currentMarker)
 				}
 
