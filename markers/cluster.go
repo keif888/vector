@@ -23,8 +23,7 @@ import (
 
 func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logrus.Logger) (err error) {
 	start := time.Now()
-	postgresLimit := 15
-	qdrantLimit := 15
+	dbmsLimit := 15
 	elapsed := time.Now()
 	if bruteForce && dataSourceName.Driver != dsn.DriverQdrant {
 		// 9s for 5k from MariaDB
@@ -222,8 +221,8 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				faceEmbedding := unclustered[currentMarker]
 				score := float32(ClusterDist)
 				// ToDo: Add retry if 15 are found, like the Postgres code.
-				limit := uint64(qdrantLimit) // down from 2000000
-				hnswef := uint64(120)
+				limit := uint64(dbmsLimit) // down from 2000000
+				hnswef := uint64(384)
 				matchdb = time.Now()
 				var results []*qdrant.ScoredPoint
 				if bruteForce {
@@ -272,7 +271,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						ScoreThreshold: &score,
 						WithPayload:    qdrant.NewWithPayload(true),
 						WithVectors:    qdrant.NewWithVectors(false),
-						// Params:         &qdrant.SearchParams{HnswEf: &hnswef},
+						Params:         &qdrant.SearchParams{HnswEf: &hnswef},
 						// Very Slow!!! Params: &qdrant.SearchParams{Exact: qdrant.PtrOf(true)},
 					})
 				}
@@ -296,7 +295,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 							found++
 						}
 						pointIDs = append(pointIDs, result.Id)
-						if markerFound != currentMarker || (len(results) != qdrantLimit && markerFound == currentMarker) {
+						if markerFound != currentMarker || (len(results) != dbmsLimit && markerFound == currentMarker) {
 							delete(unclustered, markerFound)
 						} else {
 							log.Debugf("clusternew: qdrant will retry %s", currentMarker)
@@ -310,7 +309,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					}
 
 					// Sometimes the currentMarker isn't removed.
-					if len(results) < qdrantLimit && len(results) > 0 {
+					if len(results) < dbmsLimit && len(results) > 0 {
 						if _, ok := unclustered[currentMarker]; ok {
 							log.Debugf("clusternew: records found, but expected %s was not", currentMarker)
 						}
@@ -461,7 +460,8 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 
 				var query *gorm.DB
 
-				if dataSourceName.Driver == dsn.DriverPostgres {
+				switch dataSourceName.Driver {
+				case dsn.DriverPostgres:
 					if r := dbms.Db().Exec("SET hnsw.ef_search = 120;SET hnsw.iterative_scan = strict_order;"); r.Error != nil { //SET hnsw.ef_search = 120;
 						log.Errorf("ClusterNew: SETs failed with %s", r.Error)
 						return r.Error
@@ -475,8 +475,17 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 							"WHERE marker_type = ? AND marker_invalid = FALSE AND size >= ? AND score >= ? "+
 							"AND face_id = '' AND clustered = false ORDER BY distance LIMIT ?) "+
 							"SELECT distance, marker_uid FROM face_match "+
-							"WHERE distance <= ? ORDER BY distance", currentMarker, MarkerFace, ClusterSizeThreshold, ClusterScoreThreshold, postgresLimit, ClusterDist)
-				} else {
+							"WHERE distance <= ? ORDER BY distance", currentMarker, MarkerFace, ClusterSizeThreshold, ClusterScoreThreshold, dbmsLimit, ClusterDist)
+				case dsn.DriverMySQL:
+					query = dbms.Db().
+						Raw("WITH face_match AS ("+
+							"SELECT VEC_DISTANCE_EUCLIDEAN(embedding, (select embedding from vector_marker_faces where marker_uid = ?)) as distance, vector_marker_faces.marker_uid "+
+							"FROM vector_markers INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid "+
+							"WHERE marker_type = ? AND marker_invalid = FALSE AND size >= ? AND score >= ? "+
+							"AND face_id = '' AND clustered = false ORDER BY distance LIMIT ?) "+
+							"SELECT distance, marker_uid FROM face_match "+
+							"WHERE distance <= ? ORDER BY distance", currentMarker, MarkerFace, ClusterSizeThreshold, ClusterScoreThreshold, dbmsLimit, ClusterDist)
+				case dsn.DriverSQLite3:
 					query = dbms.Db().
 						Model(&VectorMarker{}).
 						Joins("INNER JOIN vector_marker_faces ON vector_markers.marker_uid = vector_marker_faces.marker_uid").
@@ -489,11 +498,6 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 						Where(whereStmt, currentMarker, ClusterDist).
 						Select(selectStmt, currentMarker)
 				}
-				if dataSourceName.Driver == dsn.DriverPostgreSQL {
-					query.
-						Order("distance").
-						Limit(postgresLimit)
-				}
 
 				if result := query.
 					Find(&distResults); result.Error != nil {
@@ -502,6 +506,16 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 				} else {
 					matchTime += time.Since(matchdb)
 					matchCount++
+					// if dataSourceName.Driver == dsn.DriverMySQL {
+					// 	// Need to remove anything above the ClusterDist as MariaDB can't filter by the distance efficiently
+					// 	tmpResults := distResults
+					// 	distResults = make([]DistResult, 0)
+					// 	for _, r := range tmpResults {
+					// 		if r.Distance <= ClusterDist {
+					// 			distResults = append(distResults, r)
+					// 		}
+					// 	}
+					// }
 					// return nil
 					if len(distResults) >= ClusterCore {
 						clusterCount++
@@ -510,7 +524,7 @@ func ClusterNew(dataSourceName dsn.DSN, equation int, bruteForce bool, log *logr
 					markerUIDs := []string{}
 					for _, r := range distResults {
 						markerUIDs = append(markerUIDs, r.MarkerUID)
-						if r.MarkerUID != currentMarker || dataSourceName.Driver != dsn.DriverPostgres || (dataSourceName.Driver == dsn.DriverPostgres && len(distResults) != postgresLimit && r.MarkerUID == currentMarker) {
+						if r.MarkerUID != currentMarker || (len(distResults) != dbmsLimit && r.MarkerUID == currentMarker) {
 							delete(unclustered, r.MarkerUID)
 						} else {
 							log.Debugf("clusternew: postgres will retry %s", currentMarker)
